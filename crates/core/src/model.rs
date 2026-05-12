@@ -4,7 +4,13 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelValidationError {
-    EmptyValue { value_type: &'static str },
+    EmptyValue {
+        value_type: &'static str,
+    },
+    EmptyField {
+        entity: &'static str,
+        field: &'static str,
+    },
 }
 
 impl fmt::Display for ModelValidationError {
@@ -12,6 +18,9 @@ impl fmt::Display for ModelValidationError {
         match self {
             Self::EmptyValue { value_type } => {
                 write!(formatter, "{value_type} must not be empty")
+            }
+            Self::EmptyField { entity, field } => {
+                write!(formatter, "{entity}.{field} must not be empty")
             }
         }
     }
@@ -25,6 +34,18 @@ fn validate_non_empty(
 ) -> Result<String, ModelValidationError> {
     if value.trim().is_empty() {
         return Err(ModelValidationError::EmptyValue { value_type });
+    }
+
+    Ok(value)
+}
+
+fn validate_required_field(
+    entity: &'static str,
+    field: &'static str,
+    value: String,
+) -> Result<String, ModelValidationError> {
+    if value.trim().is_empty() {
+        return Err(ModelValidationError::EmptyField { entity, field });
     }
 
     Ok(value)
@@ -150,6 +171,31 @@ pub struct User {
     pub created_at: ModelTimestamp,
 }
 
+impl User {
+    pub fn new(
+        id: UserId,
+        username: impl Into<String>,
+        display_name: impl Into<String>,
+        locale: Locale,
+        created_at: ModelTimestamp,
+    ) -> Result<Self, ModelValidationError> {
+        Ok(Self {
+            id,
+            username: validate_required_field("User", "username", username.into())?,
+            display_name: validate_required_field("User", "display_name", display_name.into())?,
+            locale,
+            bio: None,
+            status: None,
+            profile_id: None,
+            persona_id: None,
+            interest_ids: Vec::new(),
+            community_ids: Vec::new(),
+            organization_ids: Vec::new(),
+            created_at,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
     pub id: ProfileId,
@@ -161,6 +207,26 @@ pub struct Profile {
     pub updated_at: ModelTimestamp,
 }
 
+impl Profile {
+    pub fn new(
+        id: ProfileId,
+        user_id: UserId,
+        display_name: impl Into<String>,
+        locale: Locale,
+        updated_at: ModelTimestamp,
+    ) -> Result<Self, ModelValidationError> {
+        Ok(Self {
+            id,
+            user_id,
+            display_name: validate_required_field("Profile", "display_name", display_name.into())?,
+            locale,
+            bio: None,
+            avatar_url: None,
+            updated_at,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Username {
     pub id: UsernameId,
@@ -168,6 +234,23 @@ pub struct Username {
     pub value: String,
     pub created_at: ModelTimestamp,
     pub retired_at: Option<ModelTimestamp>,
+}
+
+impl Username {
+    pub fn new(
+        id: UsernameId,
+        user_id: UserId,
+        value: impl Into<String>,
+        created_at: ModelTimestamp,
+    ) -> Result<Self, ModelValidationError> {
+        Ok(Self {
+            id,
+            user_id,
+            value: validate_required_field("Username", "value", value.into())?,
+            created_at,
+            retired_at: None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,11 +262,38 @@ pub struct Persona {
     pub created_at: ModelTimestamp,
 }
 
+impl Persona {
+    pub fn new(
+        id: PersonaId,
+        user_id: UserId,
+        summary: impl Into<String>,
+        created_at: ModelTimestamp,
+    ) -> Result<Self, ModelValidationError> {
+        Ok(Self {
+            id,
+            user_id,
+            summary: validate_required_field("Persona", "summary", summary.into())?,
+            traits: Vec::new(),
+            created_at,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Interest {
     pub id: InterestId,
     pub label: String,
     pub category: Option<String>,
+}
+
+impl Interest {
+    pub fn new(id: InterestId, label: impl Into<String>) -> Result<Self, ModelValidationError> {
+        Ok(Self {
+            id,
+            label: validate_required_field("Interest", "label", label.into())?,
+            category: None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +303,23 @@ pub struct Status {
     pub text: String,
     pub created_at: ModelTimestamp,
     pub expires_at: Option<ModelTimestamp>,
+}
+
+impl Status {
+    pub fn new(
+        id: StatusId,
+        user_id: UserId,
+        text: impl Into<String>,
+        created_at: ModelTimestamp,
+    ) -> Result<Self, ModelValidationError> {
+        Ok(Self {
+            id,
+            user_id,
+            text: validate_required_field("Status", "text", text.into())?,
+            created_at,
+            expires_at: None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +333,25 @@ pub struct Post {
     pub updated_at: Option<ModelTimestamp>,
 }
 
+impl Post {
+    pub fn new(
+        id: PostId,
+        author_id: UserId,
+        body: impl Into<String>,
+        created_at: ModelTimestamp,
+    ) -> Result<Self, ModelValidationError> {
+        Ok(Self {
+            id,
+            author_id,
+            community_id: None,
+            title: None,
+            body: validate_required_field("Post", "body", body.into())?,
+            created_at,
+            updated_at: None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Comment {
     pub id: CommentId,
@@ -215,6 +361,26 @@ pub struct Comment {
     pub body: String,
     pub created_at: ModelTimestamp,
     pub updated_at: Option<ModelTimestamp>,
+}
+
+impl Comment {
+    pub fn new(
+        id: CommentId,
+        post_id: PostId,
+        author_id: UserId,
+        body: impl Into<String>,
+        created_at: ModelTimestamp,
+    ) -> Result<Self, ModelValidationError> {
+        Ok(Self {
+            id,
+            post_id,
+            author_id,
+            parent_comment_id: None,
+            body: validate_required_field("Comment", "body", body.into())?,
+            created_at,
+            updated_at: None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,12 +426,44 @@ pub struct Community {
     pub created_at: ModelTimestamp,
 }
 
+impl Community {
+    pub fn new(
+        id: CommunityId,
+        name: impl Into<String>,
+        created_at: ModelTimestamp,
+    ) -> Result<Self, ModelValidationError> {
+        Ok(Self {
+            id,
+            name: validate_required_field("Community", "name", name.into())?,
+            description: None,
+            owner_id: None,
+            organization_id: None,
+            created_at,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Organization {
     pub id: OrganizationId,
     pub name: String,
     pub description: Option<String>,
     pub created_at: ModelTimestamp,
+}
+
+impl Organization {
+    pub fn new(
+        id: OrganizationId,
+        name: impl Into<String>,
+        created_at: ModelTimestamp,
+    ) -> Result<Self, ModelValidationError> {
+        Ok(Self {
+            id,
+            name: validate_required_field("Organization", "name", name.into())?,
+            description: None,
+            created_at,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -448,6 +646,261 @@ mod tests {
         ActivityEventId::new("activity-1").expect("valid");
         Locale::new("en-US").expect("valid");
         ModelTimestamp::new("2026-05-12T18:30:00Z").expect("valid");
+    }
+
+    #[test]
+    fn entity_constructors_preserve_valid_required_values() {
+        let timestamp = ModelTimestamp::new("2026-05-12T18:30:00Z").expect("valid");
+        let user_id = UserId::new("user-000001").expect("valid");
+
+        let user = User::new(
+            user_id.clone(),
+            "alex.morgan",
+            "Alex Morgan",
+            Locale::new("en-US").expect("valid"),
+            timestamp.clone(),
+        )
+        .expect("user should be valid");
+        let profile = Profile::new(
+            ProfileId::new("profile-000001").expect("valid"),
+            user_id.clone(),
+            "Alex Morgan",
+            Locale::new("en-US").expect("valid"),
+            timestamp.clone(),
+        )
+        .expect("profile should be valid");
+        let username = Username::new(
+            UsernameId::new("username-000001").expect("valid"),
+            user_id.clone(),
+            "alex.morgan",
+            timestamp.clone(),
+        )
+        .expect("username should be valid");
+        let persona = Persona::new(
+            PersonaId::new("persona-000001").expect("valid"),
+            user_id.clone(),
+            "Practical community builder",
+            timestamp.clone(),
+        )
+        .expect("persona should be valid");
+        let interest = Interest::new(
+            InterestId::new("interest-photography").expect("valid"),
+            "Photography",
+        )
+        .expect("interest should be valid");
+        let status = Status::new(
+            StatusId::new("status-000001").expect("valid"),
+            user_id.clone(),
+            "active",
+            timestamp.clone(),
+        )
+        .expect("status should be valid");
+        let post = Post::new(
+            PostId::new("post-000001").expect("valid"),
+            user_id.clone(),
+            "Looking for a compact daily carry recommendation.",
+            timestamp.clone(),
+        )
+        .expect("post should be valid");
+        let comment = Comment::new(
+            CommentId::new("comment-000001").expect("valid"),
+            post.id.clone(),
+            user_id,
+            "Try a weather-sealed body if you travel often.",
+            timestamp.clone(),
+        )
+        .expect("comment should be valid");
+        let community = Community::new(
+            CommunityId::new("community-cameras").expect("valid"),
+            "Camera Club",
+            timestamp.clone(),
+        )
+        .expect("community should be valid");
+        let organization = Organization::new(
+            OrganizationId::new("organization-open-labs").expect("valid"),
+            "Open Labs",
+            timestamp,
+        )
+        .expect("organization should be valid");
+
+        assert_eq!(user.username, "alex.morgan");
+        assert_eq!(user.display_name, "Alex Morgan");
+        assert!(user.bio.is_none());
+        assert!(user.interest_ids.is_empty());
+        assert_eq!(profile.display_name, "Alex Morgan");
+        assert_eq!(username.value, "alex.morgan");
+        assert!(username.retired_at.is_none());
+        assert_eq!(persona.summary, "Practical community builder");
+        assert!(persona.traits.is_empty());
+        assert_eq!(interest.label, "Photography");
+        assert!(interest.category.is_none());
+        assert_eq!(status.text, "active");
+        assert_eq!(
+            post.body,
+            "Looking for a compact daily carry recommendation."
+        );
+        assert!(post.title.is_none());
+        assert_eq!(
+            comment.body,
+            "Try a weather-sealed body if you travel often."
+        );
+        assert!(comment.parent_comment_id.is_none());
+        assert_eq!(community.name, "Camera Club");
+        assert!(community.description.is_none());
+        assert_eq!(organization.name, "Open Labs");
+        assert!(organization.description.is_none());
+    }
+
+    #[test]
+    fn entity_constructors_reject_empty_required_values() {
+        let timestamp = ModelTimestamp::new("2026-05-12T18:30:00Z").expect("valid");
+        let user_id = UserId::new("user-000001").expect("valid");
+
+        assert_eq!(
+            User::new(
+                user_id.clone(),
+                "",
+                "Alex Morgan",
+                Locale::new("en-US").expect("valid"),
+                timestamp.clone(),
+            ),
+            Err(ModelValidationError::EmptyField {
+                entity: "User",
+                field: "username"
+            })
+        );
+        assert_eq!(
+            User::new(
+                user_id.clone(),
+                "alex.morgan",
+                "   ",
+                Locale::new("en-US").expect("valid"),
+                timestamp.clone(),
+            ),
+            Err(ModelValidationError::EmptyField {
+                entity: "User",
+                field: "display_name"
+            })
+        );
+        assert_eq!(
+            Profile::new(
+                ProfileId::new("profile-000001").expect("valid"),
+                user_id.clone(),
+                "\t",
+                Locale::new("en-US").expect("valid"),
+                timestamp.clone(),
+            ),
+            Err(ModelValidationError::EmptyField {
+                entity: "Profile",
+                field: "display_name"
+            })
+        );
+        assert_eq!(
+            Username::new(
+                UsernameId::new("username-000001").expect("valid"),
+                user_id.clone(),
+                "\n",
+                timestamp.clone(),
+            ),
+            Err(ModelValidationError::EmptyField {
+                entity: "Username",
+                field: "value"
+            })
+        );
+        assert_eq!(
+            Persona::new(
+                PersonaId::new("persona-000001").expect("valid"),
+                user_id.clone(),
+                "",
+                timestamp.clone(),
+            ),
+            Err(ModelValidationError::EmptyField {
+                entity: "Persona",
+                field: "summary"
+            })
+        );
+        assert_eq!(
+            Interest::new(
+                InterestId::new("interest-photography").expect("valid"),
+                "  ",
+            ),
+            Err(ModelValidationError::EmptyField {
+                entity: "Interest",
+                field: "label"
+            })
+        );
+        assert_eq!(
+            Status::new(
+                StatusId::new("status-000001").expect("valid"),
+                user_id.clone(),
+                "",
+                timestamp.clone(),
+            ),
+            Err(ModelValidationError::EmptyField {
+                entity: "Status",
+                field: "text"
+            })
+        );
+        assert_eq!(
+            Post::new(
+                PostId::new("post-000001").expect("valid"),
+                user_id.clone(),
+                "   ",
+                timestamp.clone(),
+            ),
+            Err(ModelValidationError::EmptyField {
+                entity: "Post",
+                field: "body"
+            })
+        );
+        assert_eq!(
+            Comment::new(
+                CommentId::new("comment-000001").expect("valid"),
+                PostId::new("post-000001").expect("valid"),
+                user_id,
+                "\t\n",
+                timestamp.clone(),
+            ),
+            Err(ModelValidationError::EmptyField {
+                entity: "Comment",
+                field: "body"
+            })
+        );
+        assert_eq!(
+            Community::new(
+                CommunityId::new("community-cameras").expect("valid"),
+                "",
+                timestamp.clone(),
+            ),
+            Err(ModelValidationError::EmptyField {
+                entity: "Community",
+                field: "name"
+            })
+        );
+        assert_eq!(
+            Organization::new(
+                OrganizationId::new("organization-open-labs").expect("valid"),
+                " ",
+                timestamp,
+            ),
+            Err(ModelValidationError::EmptyField {
+                entity: "Organization",
+                field: "name"
+            })
+        );
+    }
+
+    #[test]
+    fn entity_validation_errors_identify_entity_and_field() {
+        let error = Post::new(
+            PostId::new("post-000001").expect("valid"),
+            UserId::new("user-000001").expect("valid"),
+            "",
+            ModelTimestamp::new("2026-05-12T18:30:00Z").expect("valid"),
+        )
+        .expect_err("post body should be required");
+
+        assert_eq!(error.to_string(), "Post.body must not be empty");
     }
 
     #[test]
