@@ -1,0 +1,10 @@
+[package]
+name = "synthetic_pop_policy"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "synthetic_pop_policy"
+path = "src/lib.rs"
