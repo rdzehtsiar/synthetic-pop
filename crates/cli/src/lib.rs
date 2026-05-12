@@ -14,9 +14,14 @@ pub fn placeholder_message() -> String {
     } else {
         "deterministic RNG is not available"
     };
+    let canonical_data_model_status = if capabilities.canonical_data_model_available {
+        "canonical data model is available"
+    } else {
+        "canonical data model is not available"
+    };
     format!(
         "{PRODUCT_NAME}: {PROJECT_PROMISE} ({status}).\n\
-         {core_status}; {deterministic_rng_status}; Generation commands are not implemented yet.\n\
+         {core_status}; {deterministic_rng_status}; {canonical_data_model_status}; Generation commands are not implemented yet.\n\
          Planned first command: {PRODUCT_NAME} generate {FIRST_SCENARIO} --seed demo --users 10000",
         status = current_status().label()
     )
@@ -32,6 +37,8 @@ mod tests {
 
         assert!(message.contains("Rust core foundation is available"));
         assert!(message.contains("deterministic RNG is available"));
+        assert!(message.contains("canonical data model is available"));
+        assert!(message.contains("milestone 4 canonical data model"));
         assert!(message.contains(current_status().label()));
         assert!(message.contains("synthetic-pop generate forum"));
     }

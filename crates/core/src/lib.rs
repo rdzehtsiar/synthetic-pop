@@ -25,6 +25,7 @@ pub enum MilestoneStatus {
     ScaffoldOnly,
     RustCoreFoundation,
     DeterministicGenerationSystem,
+    CanonicalDataModel,
 }
 
 impl MilestoneStatus {
@@ -34,13 +35,14 @@ impl MilestoneStatus {
             Self::ScaffoldOnly => "milestone 1 scaffold",
             Self::RustCoreFoundation => "milestone 2 rust core foundation",
             Self::DeterministicGenerationSystem => "milestone 3 deterministic generation system",
+            Self::CanonicalDataModel => "milestone 4 canonical data model",
         }
     }
 }
 
 #[must_use]
 pub const fn current_status() -> MilestoneStatus {
-    MilestoneStatus::DeterministicGenerationSystem
+    MilestoneStatus::CanonicalDataModel
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +84,7 @@ pub struct CoreCapabilities {
     pub offline_core_available: bool,
     pub local_core_available: bool,
     pub deterministic_rng_available: bool,
+    pub canonical_data_model_available: bool,
     pub generation_available: bool,
     pub policy_available: bool,
     pub export_available: bool,
@@ -97,6 +100,7 @@ impl CoreCapabilities {
             offline_core_available: true,
             local_core_available: true,
             deterministic_rng_available: false,
+            canonical_data_model_available: false,
             generation_available: false,
             policy_available: false,
             export_available: false,
@@ -112,6 +116,23 @@ impl CoreCapabilities {
             offline_core_available: true,
             local_core_available: true,
             deterministic_rng_available: true,
+            canonical_data_model_available: false,
+            generation_available: false,
+            policy_available: false,
+            export_available: false,
+            bindings_available: false,
+            desktop_available: false,
+            wasm_available: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn canonical_data_model() -> Self {
+        Self {
+            offline_core_available: true,
+            local_core_available: true,
+            deterministic_rng_available: true,
+            canonical_data_model_available: true,
             generation_available: false,
             policy_available: false,
             export_available: false,
@@ -471,7 +492,7 @@ impl CoreEngine {
 
     #[must_use]
     pub const fn capabilities(&self) -> CoreCapabilities {
-        CoreCapabilities::deterministic_generation_system()
+        CoreCapabilities::canonical_data_model()
     }
 
     pub fn validate_run_request(
@@ -545,15 +566,9 @@ mod tests {
     }
 
     #[test]
-    fn current_status_reports_deterministic_generation_system() {
-        assert_eq!(
-            current_status(),
-            MilestoneStatus::DeterministicGenerationSystem
-        );
-        assert_eq!(
-            current_status().label(),
-            "milestone 3 deterministic generation system"
-        );
+    fn current_status_reports_canonical_data_model() {
+        assert_eq!(current_status(), MilestoneStatus::CanonicalDataModel);
+        assert_eq!(current_status().label(), "milestone 4 canonical data model");
     }
 
     #[test]
@@ -589,12 +604,42 @@ mod tests {
     }
 
     #[test]
-    fn reports_foundation_capabilities_truthfully() {
+    fn capability_constructors_report_milestone_boundaries_truthfully() {
+        let foundation = CoreCapabilities::rust_core_foundation();
+
+        assert!(foundation.offline_core_available);
+        assert!(foundation.local_core_available);
+        assert!(!foundation.deterministic_rng_available);
+        assert!(!foundation.canonical_data_model_available);
+        assert!(!foundation.generation_available);
+        assert!(!foundation.policy_available);
+        assert!(!foundation.export_available);
+        assert!(!foundation.bindings_available);
+        assert!(!foundation.desktop_available);
+        assert!(!foundation.wasm_available);
+
+        let deterministic = CoreCapabilities::deterministic_generation_system();
+
+        assert!(deterministic.offline_core_available);
+        assert!(deterministic.local_core_available);
+        assert!(deterministic.deterministic_rng_available);
+        assert!(!deterministic.canonical_data_model_available);
+        assert!(!deterministic.generation_available);
+        assert!(!deterministic.policy_available);
+        assert!(!deterministic.export_available);
+        assert!(!deterministic.bindings_available);
+        assert!(!deterministic.desktop_available);
+        assert!(!deterministic.wasm_available);
+    }
+
+    #[test]
+    fn reports_current_capabilities_truthfully() {
         let capabilities = CoreEngine::default().capabilities();
 
         assert!(capabilities.offline_core_available);
         assert!(capabilities.local_core_available);
         assert!(capabilities.deterministic_rng_available);
+        assert!(capabilities.canonical_data_model_available);
         assert!(!capabilities.generation_available);
         assert!(!capabilities.policy_available);
         assert!(!capabilities.export_available);
