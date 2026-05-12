@@ -134,9 +134,179 @@ pub enum ActivityEventKind {
     OrganizationJoined,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct User {
+    pub id: UserId,
+    pub username: String,
+    pub display_name: String,
+    pub locale: Locale,
+    pub bio: Option<String>,
+    pub status: Option<String>,
+    pub profile_id: Option<ProfileId>,
+    pub persona_id: Option<PersonaId>,
+    pub interest_ids: Vec<InterestId>,
+    pub community_ids: Vec<CommunityId>,
+    pub organization_ids: Vec<OrganizationId>,
+    pub created_at: ModelTimestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Profile {
+    pub id: ProfileId,
+    pub user_id: UserId,
+    pub display_name: String,
+    pub locale: Locale,
+    pub bio: Option<String>,
+    pub avatar_url: Option<String>,
+    pub updated_at: ModelTimestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Username {
+    pub id: UsernameId,
+    pub user_id: UserId,
+    pub value: String,
+    pub created_at: ModelTimestamp,
+    pub retired_at: Option<ModelTimestamp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Persona {
+    pub id: PersonaId,
+    pub user_id: UserId,
+    pub summary: String,
+    pub traits: Vec<String>,
+    pub created_at: ModelTimestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Interest {
+    pub id: InterestId,
+    pub label: String,
+    pub category: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Status {
+    pub id: StatusId,
+    pub user_id: UserId,
+    pub text: String,
+    pub created_at: ModelTimestamp,
+    pub expires_at: Option<ModelTimestamp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Post {
+    pub id: PostId,
+    pub author_id: UserId,
+    pub community_id: Option<CommunityId>,
+    pub title: Option<String>,
+    pub body: String,
+    pub created_at: ModelTimestamp,
+    pub updated_at: Option<ModelTimestamp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Comment {
+    pub id: CommentId,
+    pub post_id: PostId,
+    pub author_id: UserId,
+    pub parent_comment_id: Option<CommentId>,
+    pub body: String,
+    pub created_at: ModelTimestamp,
+    pub updated_at: Option<ModelTimestamp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type", content = "id")]
+pub enum ReactionTarget {
+    Post(PostId),
+    Comment(CommentId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reaction {
+    pub id: ReactionId,
+    pub actor_id: UserId,
+    pub target: ReactionTarget,
+    pub kind: ReactionKind,
+    pub created_at: ModelTimestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type", content = "id")]
+pub enum RelationshipEndpoint {
+    User(UserId),
+    Community(CommunityId),
+    Organization(OrganizationId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Relationship {
+    pub id: RelationshipId,
+    pub source: RelationshipEndpoint,
+    pub target: RelationshipEndpoint,
+    pub kind: RelationshipKind,
+    pub created_at: ModelTimestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Community {
+    pub id: CommunityId,
+    pub name: String,
+    pub description: Option<String>,
+    pub owner_id: Option<UserId>,
+    pub organization_id: Option<OrganizationId>,
+    pub created_at: ModelTimestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Organization {
+    pub id: OrganizationId,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: ModelTimestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type", content = "id")]
+pub enum ActivityObject {
+    User(UserId),
+    Profile(ProfileId),
+    Username(UsernameId),
+    Persona(PersonaId),
+    Interest(InterestId),
+    Status(StatusId),
+    Post(PostId),
+    Comment(CommentId),
+    Reaction(ReactionId),
+    Relationship(RelationshipId),
+    Community(CommunityId),
+    Organization(OrganizationId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityEvent {
+    pub id: ActivityEventId,
+    pub kind: ActivityEventKind,
+    pub actor_id: Option<UserId>,
+    pub object: ActivityObject,
+    pub occurred_at: ModelTimestamp,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_json_roundtrip<T>(value: &T)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + PartialEq,
+    {
+        let serialized = serde_json::to_string(value).expect("value should serialize");
+        let deserialized: T = serde_json::from_str(&serialized).expect("value should deserialize");
+
+        assert_eq!(&deserialized, value);
+    }
 
     #[test]
     fn accepts_non_empty_id_values() {
@@ -278,5 +448,158 @@ mod tests {
         ActivityEventId::new("activity-1").expect("valid");
         Locale::new("en-US").expect("valid");
         ModelTimestamp::new("2026-05-12T18:30:00Z").expect("valid");
+    }
+
+    #[test]
+    fn user_entity_represents_example_json_shape_and_roundtrips() {
+        let user = User {
+            id: UserId::new("user-000001").expect("valid"),
+            username: "alex.morgan".to_string(),
+            display_name: "Alex Morgan".to_string(),
+            locale: Locale::new("en-US").expect("valid"),
+            bio: Some("Community moderator and weekend photographer.".to_string()),
+            status: Some("active".to_string()),
+            profile_id: Some(ProfileId::new("profile-000001").expect("valid")),
+            persona_id: Some(PersonaId::new("persona-000001").expect("valid")),
+            interest_ids: vec![InterestId::new("interest-photography").expect("valid")],
+            community_ids: vec![CommunityId::new("community-cameras").expect("valid")],
+            organization_ids: vec![OrganizationId::new("organization-open-labs").expect("valid")],
+            created_at: ModelTimestamp::new("2026-05-12T18:30:00Z").expect("valid"),
+        };
+
+        let serialized = serde_json::to_value(&user).expect("user should serialize");
+
+        assert_eq!(serialized["id"], "user-000001");
+        assert_eq!(serialized["username"], "alex.morgan");
+        assert_eq!(serialized["display_name"], "Alex Morgan");
+        assert_eq!(serialized["locale"], "en-US");
+        assert_eq!(
+            serialized["bio"],
+            "Community moderator and weekend photographer."
+        );
+        assert_eq!(serialized["status"], "active");
+        assert_json_roundtrip(&user);
+    }
+
+    #[test]
+    fn identity_support_entities_construct_and_roundtrip() {
+        let timestamp = ModelTimestamp::new("2026-05-12T18:30:00Z").expect("valid");
+        let user_id = UserId::new("user-000001").expect("valid");
+
+        let profile = Profile {
+            id: ProfileId::new("profile-000001").expect("valid"),
+            user_id: user_id.clone(),
+            display_name: "Alex Morgan".to_string(),
+            locale: Locale::new("en-US").expect("valid"),
+            bio: Some("Community moderator.".to_string()),
+            avatar_url: Some("https://example.test/avatar/alex.png".to_string()),
+            updated_at: timestamp.clone(),
+        };
+        let username = Username {
+            id: UsernameId::new("username-000001").expect("valid"),
+            user_id: user_id.clone(),
+            value: "alex.morgan".to_string(),
+            created_at: timestamp.clone(),
+            retired_at: None,
+        };
+        let persona = Persona {
+            id: PersonaId::new("persona-000001").expect("valid"),
+            user_id: user_id.clone(),
+            summary: "Practical community builder".to_string(),
+            traits: vec!["helpful".to_string(), "curious".to_string()],
+            created_at: timestamp.clone(),
+        };
+        let interest = Interest {
+            id: InterestId::new("interest-photography").expect("valid"),
+            label: "Photography".to_string(),
+            category: Some("creative".to_string()),
+        };
+        let status = Status {
+            id: StatusId::new("status-000001").expect("valid"),
+            user_id,
+            text: "active".to_string(),
+            created_at: timestamp.clone(),
+            expires_at: None,
+        };
+
+        assert_json_roundtrip(&profile);
+        assert_json_roundtrip(&username);
+        assert_json_roundtrip(&persona);
+        assert_json_roundtrip(&interest);
+        assert_json_roundtrip(&status);
+    }
+
+    #[test]
+    fn forum_community_relationship_and_activity_entities_roundtrip() {
+        let timestamp = ModelTimestamp::new("2026-05-12T18:30:00Z").expect("valid");
+        let user_id = UserId::new("user-000001").expect("valid");
+        let community_id = CommunityId::new("community-cameras").expect("valid");
+        let organization_id = OrganizationId::new("organization-open-labs").expect("valid");
+
+        let organization = Organization {
+            id: organization_id.clone(),
+            name: "Open Labs".to_string(),
+            description: Some("Local research collective".to_string()),
+            created_at: timestamp.clone(),
+        };
+        let community = Community {
+            id: community_id.clone(),
+            name: "Camera Club".to_string(),
+            description: Some("A community for camera discussions".to_string()),
+            owner_id: Some(user_id.clone()),
+            organization_id: Some(organization_id.clone()),
+            created_at: timestamp.clone(),
+        };
+        let post = Post {
+            id: PostId::new("post-000001").expect("valid"),
+            author_id: user_id.clone(),
+            community_id: Some(community_id.clone()),
+            title: Some("Best compact camera?".to_string()),
+            body: "Looking for a compact daily carry recommendation.".to_string(),
+            created_at: timestamp.clone(),
+            updated_at: None,
+        };
+        let comment = Comment {
+            id: CommentId::new("comment-000001").expect("valid"),
+            post_id: post.id.clone(),
+            author_id: user_id.clone(),
+            parent_comment_id: None,
+            body: "Try a weather-sealed body if you travel often.".to_string(),
+            created_at: timestamp.clone(),
+            updated_at: None,
+        };
+        let reaction = Reaction {
+            id: ReactionId::new("reaction-000001").expect("valid"),
+            actor_id: user_id.clone(),
+            target: ReactionTarget::Comment(comment.id.clone()),
+            kind: ReactionKind::Like,
+            created_at: timestamp.clone(),
+        };
+        let relationship = Relationship {
+            id: RelationshipId::new("relationship-000001").expect("valid"),
+            source: RelationshipEndpoint::User(user_id.clone()),
+            target: RelationshipEndpoint::Community(community_id),
+            kind: RelationshipKind::MemberOf,
+            created_at: timestamp.clone(),
+        };
+        let activity = ActivityEvent {
+            id: ActivityEventId::new("activity-000001").expect("valid"),
+            kind: ActivityEventKind::ReactionCreated,
+            actor_id: Some(user_id),
+            object: ActivityObject::Reaction(reaction.id.clone()),
+            occurred_at: timestamp,
+        };
+
+        assert_json_roundtrip(&organization);
+        assert_json_roundtrip(&community);
+        assert_json_roundtrip(&post);
+        assert_json_roundtrip(&comment);
+        assert_json_roundtrip(&reaction);
+        assert_json_roundtrip(&relationship);
+        assert_json_roundtrip(&activity);
+
+        let reaction_json = serde_json::to_value(&reaction).expect("reaction should serialize");
+        assert_eq!(reaction_json["target"]["type"], "comment");
+        assert_eq!(reaction_json["target"]["id"], "comment-000001");
     }
 }
