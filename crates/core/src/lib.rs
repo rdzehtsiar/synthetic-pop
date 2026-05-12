@@ -1,6 +1,8 @@
 pub const PRODUCT_NAME: &str = "synthetic-pop";
 pub const PROJECT_PROMISE: &str = "offline deterministic synthetic community generation";
 pub const MAX_GENERATION_SIZE: usize = 100_000;
+pub const REPRODUCIBILITY_METADATA_VERSION: u32 = 1;
+pub const DETERMINISTIC_RNG_ALGORITHM_VERSION: u32 = 1;
 /// Stable deterministic RNG algorithm identifier.
 ///
 /// Version 1 serializes every UTF-8 input component as a little-endian `u64`
@@ -19,6 +21,7 @@ const SPLITMIX64_MIX_2: u64 = 0x94d0_49bb_1331_11eb;
 pub enum MilestoneStatus {
     ScaffoldOnly,
     RustCoreFoundation,
+    DeterministicGenerationSystem,
 }
 
 impl MilestoneStatus {
@@ -27,13 +30,37 @@ impl MilestoneStatus {
         match self {
             Self::ScaffoldOnly => "milestone 1 scaffold",
             Self::RustCoreFoundation => "milestone 2 rust core foundation",
+            Self::DeterministicGenerationSystem => "milestone 3 deterministic generation system",
         }
     }
 }
 
 #[must_use]
 pub const fn current_status() -> MilestoneStatus {
-    MilestoneStatus::RustCoreFoundation
+    MilestoneStatus::DeterministicGenerationSystem
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReproducibilityMetadata {
+    pub metadata_version: u32,
+    pub deterministic_rng_algorithm: &'static str,
+    pub deterministic_rng_algorithm_version: u32,
+}
+
+impl ReproducibilityMetadata {
+    #[must_use]
+    pub const fn current() -> Self {
+        Self {
+            metadata_version: REPRODUCIBILITY_METADATA_VERSION,
+            deterministic_rng_algorithm: DETERMINISTIC_RNG_ALGORITHM,
+            deterministic_rng_algorithm_version: DETERMINISTIC_RNG_ALGORITHM_VERSION,
+        }
+    }
+}
+
+#[must_use]
+pub const fn reproducibility_metadata() -> ReproducibilityMetadata {
+    ReproducibilityMetadata::current()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +78,7 @@ impl Default for CoreEngineConfig {
 pub struct CoreCapabilities {
     pub offline_core_available: bool,
     pub local_core_available: bool,
+    pub deterministic_rng_available: bool,
     pub generation_available: bool,
     pub policy_available: bool,
     pub export_available: bool,
@@ -65,6 +93,22 @@ impl CoreCapabilities {
         Self {
             offline_core_available: true,
             local_core_available: true,
+            deterministic_rng_available: false,
+            generation_available: false,
+            policy_available: false,
+            export_available: false,
+            bindings_available: false,
+            desktop_available: false,
+            wasm_available: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn deterministic_generation_system() -> Self {
+        Self {
+            offline_core_available: true,
+            local_core_available: true,
+            deterministic_rng_available: true,
             generation_available: false,
             policy_available: false,
             export_available: false,
@@ -424,7 +468,7 @@ impl CoreEngine {
 
     #[must_use]
     pub const fn capabilities(&self) -> CoreCapabilities {
-        CoreCapabilities::rust_core_foundation()
+        CoreCapabilities::deterministic_generation_system()
     }
 
     pub fn validate_run_request(
@@ -453,9 +497,30 @@ mod tests {
     }
 
     #[test]
-    fn current_status_reports_rust_core_foundation() {
-        assert_eq!(current_status(), MilestoneStatus::RustCoreFoundation);
-        assert_eq!(current_status().label(), "milestone 2 rust core foundation");
+    fn current_status_reports_deterministic_generation_system() {
+        assert_eq!(
+            current_status(),
+            MilestoneStatus::DeterministicGenerationSystem
+        );
+        assert_eq!(
+            current_status().label(),
+            "milestone 3 deterministic generation system"
+        );
+    }
+
+    #[test]
+    fn exposes_reproducibility_metadata() {
+        let metadata = reproducibility_metadata();
+
+        assert_eq!(metadata.metadata_version, REPRODUCIBILITY_METADATA_VERSION);
+        assert_eq!(
+            metadata.deterministic_rng_algorithm,
+            DETERMINISTIC_RNG_ALGORITHM
+        );
+        assert_eq!(
+            metadata.deterministic_rng_algorithm_version,
+            DETERMINISTIC_RNG_ALGORITHM_VERSION
+        );
     }
 
     #[test]
@@ -481,6 +546,7 @@ mod tests {
 
         assert!(capabilities.offline_core_available);
         assert!(capabilities.local_core_available);
+        assert!(capabilities.deterministic_rng_available);
         assert!(!capabilities.generation_available);
         assert!(!capabilities.policy_available);
         assert!(!capabilities.export_available);
