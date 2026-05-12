@@ -490,6 +490,51 @@ impl Default for CoreEngine {
 mod tests {
     use super::*;
 
+    const GOLDEN_RANDOM_U64_VECTORS: [(&str, &str, &str, &str, u64); 6] = [
+        (
+            "seed-a",
+            "users",
+            "user-42",
+            "age",
+            2_209_488_964_295_464_862,
+        ),
+        (
+            "seed-a",
+            "users",
+            "user-42",
+            "display_name",
+            4_459_706_444_465_804_371,
+        ),
+        (
+            "seed-a",
+            "posts",
+            "post-1",
+            "title",
+            9_773_582_861_819_595_104,
+        ),
+        (
+            "release-2026-05",
+            "users",
+            "user-000001",
+            "locale",
+            17_647_173_114_432_058_453,
+        ),
+        (
+            "release-2026-05",
+            "posts",
+            "post-000001",
+            "toxicity_score",
+            6_776_290_718_759_254_825,
+        ),
+        (
+            "tenant:alpha",
+            "relationships",
+            "user-42->user-99",
+            "strength",
+            3_627_064_159_707_263_269,
+        ),
+    ];
+
     #[test]
     fn exposes_product_identity() {
         assert_eq!(PRODUCT_NAME, "synthetic-pop");
@@ -626,6 +671,17 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_random_matches_golden_u64_vectors() {
+        for (seed, namespace, entity_id, field, expected) in GOLDEN_RANDOM_U64_VECTORS {
+            assert_eq!(
+                random_u64(seed, namespace, entity_id, field),
+                expected,
+                "golden vector changed for ({seed}, {namespace}, {entity_id}, {field})"
+            );
+        }
+    }
+
+    #[test]
     fn deterministic_random_repeats_for_same_inputs() {
         let first = random_u64("seed-a", "users", "user-42", "age");
         let second = random_u64("seed-a", "users", "user-42", "age");
@@ -648,17 +704,30 @@ mod tests {
 
     #[test]
     fn deterministic_random_is_independent_of_call_order() {
-        let expected_age = random_u64("seed-a", "users", "user-42", "age");
-        let expected_name = random_u64("seed-a", "users", "user-42", "display_name");
-        let expected_post = random_u64("seed-a", "posts", "post-1", "title");
+        let expected: Vec<u64> = GOLDEN_RANDOM_U64_VECTORS
+            .iter()
+            .map(|&(seed, namespace, entity_id, field, _)| {
+                random_u64(seed, namespace, entity_id, field)
+            })
+            .collect();
 
-        let later_post = random_u64("seed-a", "posts", "post-1", "title");
-        let later_age = random_u64("seed-a", "users", "user-42", "age");
-        let later_name = random_u64("seed-a", "users", "user-42", "display_name");
+        let mut later: Vec<(usize, u64)> = GOLDEN_RANDOM_U64_VECTORS
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(index, &(seed, namespace, entity_id, field, _))| {
+                (index, random_u64(seed, namespace, entity_id, field))
+            })
+            .collect();
+        later.sort_by_key(|(index, _)| *index);
 
-        assert_eq!(expected_post, later_post);
-        assert_eq!(expected_age, later_age);
-        assert_eq!(expected_name, later_name);
+        assert_eq!(
+            later
+                .into_iter()
+                .map(|(_, value)| value)
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
 
     #[test]
@@ -686,6 +755,7 @@ mod tests {
         let value = random_bounded_u64("seed-a", "users", "user-42", "age", 37)
             .expect("upper bound should produce a value");
 
+        assert_eq!(value, 4);
         assert!(value < 37);
         assert_eq!(
             value,
@@ -699,6 +769,7 @@ mod tests {
         let first = random_bool("seed-a", "users", "user-42", "is_active");
         let second = random_bool("seed-a", "users", "user-42", "is_active");
 
+        assert!(!first);
         assert_eq!(first, second);
     }
 
@@ -710,6 +781,7 @@ mod tests {
         let choice =
             random_choice("seed-a", "users", "user-42", "risk", &values).expect("choice exists");
 
+        assert_eq!(index, 1);
         assert!(index < values.len());
         assert_eq!(choice, &values[index]);
         let empty: [&str; 0] = [];
@@ -733,5 +805,32 @@ mod tests {
         assert!(key.bounded_u64(10).expect("value exists") < 10);
         assert!(key.choose_index(&values).expect("index exists") < values.len());
         assert!(values.contains(key.choose(&values).expect("choice exists")));
+    }
+
+    #[test]
+    fn deterministic_random_is_safe_to_compute_in_parallel() {
+        let expected: Vec<u64> = GOLDEN_RANDOM_U64_VECTORS
+            .iter()
+            .map(|&(seed, namespace, entity_id, field, _)| {
+                random_u64(seed, namespace, entity_id, field)
+            })
+            .collect();
+
+        let handles: Vec<_> = GOLDEN_RANDOM_U64_VECTORS
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(index, &(seed, namespace, entity_id, field, _))| {
+                std::thread::spawn(move || (index, random_u64(seed, namespace, entity_id, field)))
+            })
+            .collect();
+
+        let mut actual = vec![0; GOLDEN_RANDOM_U64_VECTORS.len()];
+        for handle in handles {
+            let (index, value) = handle.join().expect("deterministic RNG thread panicked");
+            actual[index] = value;
+        }
+
+        assert_eq!(actual, expected);
     }
 }
