@@ -1,5 +1,6 @@
 pub const PRODUCT_NAME: &str = "synthetic-pop";
 pub const PROJECT_PROMISE: &str = "offline deterministic synthetic community generation";
+pub const MAX_GENERATION_SIZE: usize = 100_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MilestoneStatus {
@@ -62,6 +63,104 @@ impl CoreCapabilities {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seed(String);
+
+impl Seed {
+    pub fn new(value: impl Into<String>) -> Result<Self, CoreValidationError> {
+        let value = value.into();
+
+        if value.trim().is_empty() {
+            return Err(CoreValidationError::EmptySeed);
+        }
+
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenerationSize(usize);
+
+impl GenerationSize {
+    pub const MAX: usize = MAX_GENERATION_SIZE;
+
+    pub const fn new(value: usize) -> Result<Self, CoreValidationError> {
+        if value == 0 {
+            return Err(CoreValidationError::ZeroGenerationSize);
+        }
+
+        if value > Self::MAX {
+            return Err(CoreValidationError::GenerationSizeTooLarge {
+                requested: value,
+                max: Self::MAX,
+            });
+        }
+
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreRunRequest {
+    seed: Seed,
+    size: GenerationSize,
+}
+
+impl CoreRunRequest {
+    pub fn new(seed: impl Into<String>, size: usize) -> Result<Self, CoreValidationError> {
+        Ok(Self {
+            seed: Seed::new(seed)?,
+            size: GenerationSize::new(size)?,
+        })
+    }
+
+    #[must_use]
+    pub const fn seed(&self) -> &Seed {
+        &self.seed
+    }
+
+    #[must_use]
+    pub const fn size(&self) -> GenerationSize {
+        self.size
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreValidationError {
+    EmptySeed,
+    ZeroGenerationSize,
+    GenerationSizeTooLarge { requested: usize, max: usize },
+}
+
+impl std::fmt::Display for CoreValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptySeed => formatter.write_str("seed must not be empty"),
+            Self::ZeroGenerationSize => {
+                formatter.write_str("generation size must be greater than zero")
+            }
+            Self::GenerationSizeTooLarge { requested, max } => {
+                write!(
+                    formatter,
+                    "generation size {requested} exceeds maximum of {max}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for CoreValidationError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreEngine {
     config: CoreEngineConfig,
 }
@@ -80,6 +179,14 @@ impl CoreEngine {
     #[must_use]
     pub const fn capabilities(&self) -> CoreCapabilities {
         CoreCapabilities::rust_core_foundation()
+    }
+
+    pub fn validate_run_request(
+        &self,
+        seed: impl Into<String>,
+        size: usize,
+    ) -> Result<CoreRunRequest, CoreValidationError> {
+        CoreRunRequest::new(seed, size)
     }
 }
 
@@ -134,5 +241,74 @@ mod tests {
         assert!(!capabilities.bindings_available);
         assert!(!capabilities.desktop_available);
         assert!(!capabilities.wasm_available);
+    }
+
+    #[test]
+    fn accepts_valid_seed() {
+        let seed = Seed::new("stable-seed-1").expect("seed should be valid");
+
+        assert_eq!(seed.as_str(), "stable-seed-1");
+    }
+
+    #[test]
+    fn rejects_empty_seed() {
+        assert_eq!(Seed::new(""), Err(CoreValidationError::EmptySeed));
+        assert_eq!(Seed::new("   "), Err(CoreValidationError::EmptySeed));
+    }
+
+    #[test]
+    fn accepts_valid_generation_size() {
+        let size = GenerationSize::new(42).expect("size should be valid");
+
+        assert_eq!(size.get(), 42);
+    }
+
+    #[test]
+    fn rejects_zero_generation_size() {
+        assert_eq!(
+            GenerationSize::new(0),
+            Err(CoreValidationError::ZeroGenerationSize)
+        );
+    }
+
+    #[test]
+    fn accepts_generation_size_at_upper_boundary() {
+        let size = GenerationSize::new(MAX_GENERATION_SIZE).expect("max size should be valid");
+
+        assert_eq!(size.get(), MAX_GENERATION_SIZE);
+    }
+
+    #[test]
+    fn rejects_generation_size_above_upper_boundary() {
+        assert_eq!(
+            GenerationSize::new(MAX_GENERATION_SIZE + 1),
+            Err(CoreValidationError::GenerationSizeTooLarge {
+                requested: MAX_GENERATION_SIZE + 1,
+                max: MAX_GENERATION_SIZE,
+            })
+        );
+    }
+
+    #[test]
+    fn builds_valid_core_run_request() {
+        let request = CoreRunRequest::new("repeatable-run", 10).expect("request should be valid");
+
+        assert_eq!(request.seed().as_str(), "repeatable-run");
+        assert_eq!(request.size().get(), 10);
+    }
+
+    #[test]
+    fn core_engine_validates_run_requests() {
+        let engine = CoreEngine::default();
+
+        assert!(engine.validate_run_request("seed", 1).is_ok());
+        assert_eq!(
+            engine.validate_run_request("", 1),
+            Err(CoreValidationError::EmptySeed)
+        );
+        assert_eq!(
+            engine.validate_run_request("seed", 0),
+            Err(CoreValidationError::ZeroGenerationSize)
+        );
     }
 }
