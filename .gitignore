@@ -1,0 +1,5 @@
+# Local planning notes
+/.plan/
+
+# Rust build output
+/target/

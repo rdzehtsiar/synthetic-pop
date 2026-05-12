@@ -63,6 +63,9 @@ cargo test
 cargo clippy --all-targets --all-features
 ```
 
+See `docs/QUALITY.md` for the expected outcome of each command and the current
+test scope.
+
 ## Intentionally Deferred
 
 Milestone 1 does not implement generation, policy filtering, exports, data pack
