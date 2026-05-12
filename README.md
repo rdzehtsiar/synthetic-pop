@@ -6,31 +6,37 @@ The first product wedge remains a forum community generator that can eventually
 produce synthetic users, profiles, relationships, and activity from explicit
 inputs.
 
-Current status: Milestone 2 Rust core foundation. The repository now contains a
-small Rust workspace with a core engine API, request validation primitives, and
-truthful capability flags. It does not generate data yet.
+Current status: Milestone 3 deterministic generation system. The repository now
+contains a small Rust workspace with a core engine API, request validation
+primitives, deterministic field-level RNG primitives, reproducibility metadata,
+and truthful capability flags. It does not generate data yet.
 
 ## Rust Core Foundation
 
 `crates/core` exposes the implemented foundation:
 
-- `current_status()` reports `milestone 2 rust core foundation`.
+- `current_status()` reports `milestone 3 deterministic generation system`.
 - `CoreEngine` owns a `CoreEngineConfig` and exposes current capabilities.
-- `CoreCapabilities` marks the offline/local core as available while
-  generation, policy filtering, exports, bindings, desktop, and WASM remain
-  unavailable.
+- `CoreCapabilities` marks the offline/local core and deterministic RNG as
+  available while generation, policy filtering, exports, bindings, desktop, and
+  WASM remain unavailable.
 - `Seed`, `GenerationSize`, and `CoreRunRequest` validate request inputs only.
   Empty seeds, zero sizes, and sizes above `100_000` are rejected.
+- `DeterministicRandom` and the helper functions `random_u64`,
+  `random_bounded_u64`, `random_bool`, `random_index`, and `random_choice`
+  derive repeatable field-level values from `(seed, namespace, entity_id,
+  field)`.
+- `reproducibility_metadata()` reports the current metadata version and the
+  deterministic RNG algorithm identifier/version.
 
-The core API is intentionally validation-only in this milestone. A valid
-`CoreRunRequest` is not a generation result and no synthetic records are
-produced.
+The core API now has deterministic RNG primitives, but `CoreRunRequest` still
+does not run a scenario and no synthetic records are produced.
 
 ## CLI Status
 
 The `synthetic-pop` binary is still a placeholder. It prints the current core
-status, states that generation commands are not implemented, and points to the
-planned first command shape:
+status, states that deterministic RNG is available, states that generation
+commands are not implemented, and points to the planned first command shape:
 
 ```sh
 synthetic-pop generate forum --seed demo --users 10000
@@ -41,8 +47,8 @@ implemented yet.
 
 ## Repository Layout
 
-- `crates/core`: Milestone 2 Rust core foundation and validation-only engine
-  API.
+- `crates/core`: Milestone 3 Rust core foundation with deterministic RNG
+  primitives, reproducibility metadata, and validation-only engine API.
 - `crates/cli`: placeholder CLI binary and CLI-facing status message.
 - `crates/policy`: deferred policy filtering surface.
 - `crates/export`: deferred export surface.
@@ -82,7 +88,8 @@ See `docs/QUALITY.md` for the expected outcome and current test scope.
 
 ## Deferred Work
 
-Generation, policy filtering, export formats, data pack loading, packaged
-examples, desktop app, web app, Tauri integration, WASM, and language bindings
-remain deferred. They are represented only by placeholders or capability flags
-until later milestones define and implement their behavior.
+Data model generation, scenario output, CLI generation, policy filtering,
+export formats, data pack loading, packaged examples, desktop app, web app,
+Tauri integration, WASM, and language bindings remain deferred. They are
+represented only by placeholders or capability flags until later milestones
+define and implement their behavior.

@@ -1,8 +1,8 @@
 # Quality Checks
 
-Milestone 2 validation proves the Rust core foundation compiles, its
-validation-only API behaves as documented, and deferred surfaces do not claim
-unbuilt functionality.
+Milestone 3 validation proves the Rust core foundation compiles, deterministic
+RNG primitives behave as documented, reproducibility metadata is exposed, and
+deferred surfaces do not claim unbuilt functionality.
 
 ## Required Local Commands
 
@@ -17,29 +17,34 @@ cargo clippy --all-targets --all-features
 Expected outcome:
 
 - `cargo build` compiles the full Rust workspace.
-- `cargo test` runs the crate tests for the core API, CLI status placeholder,
-  and deferred policy/export/scenario surfaces.
+- `cargo test` runs the crate tests for the core API, deterministic RNG golden
+  vectors, CLI status placeholder, and deferred policy/export/scenario surfaces.
 - `cargo clippy --all-targets --all-features` reports no warnings.
 
 ## Current Test Scope
 
-The current tests validate milestone boundaries, not generation behavior. They
-check that:
+The current tests validate deterministic RNG primitives and milestone
+boundaries, not generated forum data. They check that:
 
-- product identity and `milestone 2 rust core foundation` status are exposed by
-  the core crate;
+- product identity and `milestone 3 deterministic generation system` status are
+  exposed by the core crate;
 - `CoreEngine` can be constructed with default or explicit config;
-- core capabilities truthfully report offline/local core availability and keep
-  generation, policy, exports, bindings, desktop, and WASM unavailable;
+- core capabilities truthfully report offline/local core and deterministic RNG
+  availability while keeping generation, policy, exports, bindings, desktop,
+  and WASM unavailable;
 - `Seed`, `GenerationSize`, and `CoreRunRequest` accept valid inputs and reject
   empty seeds, zero sizes, and sizes above `100_000`;
+- deterministic RNG golden vectors, bounded values, booleans, slice selection,
+  call-order independence, and parallel-safe derivation remain stable;
+- reproducibility metadata exposes the current metadata and RNG algorithm
+  versions;
 - the CLI message names the planned `generate forum` command while stating that
-  generation commands are not implemented;
+  deterministic RNG is available and generation commands are not implemented;
 - policy and export crates remain disabled;
 - the first planned scenario remains `forum`.
 
-Do not add generation fixtures, policy simulation tests, export golden files,
-Tauri/WASM checks, or binding tests until those surfaces exist.
+Do not add generated user/post/forum fixtures, policy simulation tests, export
+golden files, Tauri/WASM checks, or binding tests until those surfaces exist.
 
 ## Repository Hygiene
 
