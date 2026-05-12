@@ -1,3 +1,6 @@
+pub mod model;
+pub use model::*;
+
 pub const PRODUCT_NAME: &str = "synthetic-pop";
 pub const PROJECT_PROMISE: &str = "offline deterministic synthetic community generation";
 pub const MAX_GENERATION_SIZE: usize = 100_000;
