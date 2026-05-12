@@ -6,20 +6,21 @@ The first product wedge remains a forum community generator that can eventually
 produce synthetic users, profiles, relationships, and activity from explicit
 inputs.
 
-Current status: Milestone 3 deterministic generation system. The repository now
-contains a small Rust workspace with a core engine API, request validation
-primitives, deterministic field-level RNG primitives, reproducibility metadata,
-and truthful capability flags. It does not generate data yet.
+Current status: Milestone 4 canonical data model. The repository now contains a
+small Rust workspace with a core engine API, request validation primitives,
+deterministic field-level RNG primitives, reproducibility metadata, a
+serde-ready canonical model, and truthful capability flags. It does not generate
+data yet.
 
 ## Rust Core Foundation
 
 `crates/core` exposes the implemented foundation:
 
-- `current_status()` reports `milestone 3 deterministic generation system`.
+- `current_status()` reports `milestone 4 canonical data model`.
 - `CoreEngine` owns a `CoreEngineConfig` and exposes current capabilities.
 - `CoreCapabilities` marks the offline/local core and deterministic RNG as
-  available while generation, policy filtering, exports, bindings, desktop, and
-  WASM remain unavailable.
+  available, marks the canonical data model as available, and keeps generation,
+  policy filtering, exports, bindings, desktop, and WASM unavailable.
 - `Seed`, `GenerationSize`, and `CoreRunRequest` validate request inputs only.
   Empty seeds, zero sizes, and sizes above `100_000` are rejected.
 - `DeterministicRandom` and the helper functions `random_u64`,
@@ -28,15 +29,23 @@ and truthful capability flags. It does not generate data yet.
   field)`.
 - `reproducibility_metadata()` reports the current metadata version and the
   deterministic RNG algorithm identifier/version.
+- `synthetic_pop_core::model` defines the canonical record surface for users,
+  profiles, usernames, personas, interests, statuses, posts, comments,
+  reactions, relationships, communities, organizations, and activity events.
+  The model uses string-backed ID/value primitives, derives serde traits for
+  JSON-ready records, rejects empty primitive values, and provides lightweight
+  constructors for required entity fields.
 
-The core API now has deterministic RNG primitives, but `CoreRunRequest` still
-does not run a scenario and no synthetic records are produced.
+The core API now has deterministic RNG primitives and canonical record types,
+but `CoreRunRequest` still does not run a scenario and no synthetic records are
+produced.
 
 ## CLI Status
 
 The `synthetic-pop` binary is still a placeholder. It prints the current core
-status, states that deterministic RNG is available, states that generation
-commands are not implemented, and points to the planned first command shape:
+status, states that deterministic RNG and the canonical data model are
+available, states that generation commands are not implemented, and points to
+the planned first command shape:
 
 ```sh
 synthetic-pop generate forum --seed demo --users 10000
@@ -47,8 +56,9 @@ implemented yet.
 
 ## Repository Layout
 
-- `crates/core`: Milestone 3 Rust core foundation with deterministic RNG
-  primitives, reproducibility metadata, and validation-only engine API.
+- `crates/core`: Milestone 4 Rust core foundation with deterministic RNG
+  primitives, reproducibility metadata, canonical model types, and
+  validation-only engine API.
 - `crates/cli`: placeholder CLI binary and CLI-facing status message.
 - `crates/policy`: deferred policy filtering surface.
 - `crates/export`: deferred export surface.
@@ -88,8 +98,8 @@ See `docs/QUALITY.md` for the expected outcome and current test scope.
 
 ## Deferred Work
 
-Data model generation, scenario output, CLI generation, policy filtering,
-export formats, data pack loading, packaged examples, desktop app, web app,
-Tauri integration, WASM, and language bindings remain deferred. They are
-represented only by placeholders or capability flags until later milestones
-define and implement their behavior.
+Scenario output, generated datasets, CLI generation, policy filtering, export
+formats, data pack loading, packaged examples, desktop app, web app, Tauri
+integration, WASM, and language bindings remain deferred. They are represented
+only by placeholders or capability flags until later milestones define and
+implement their behavior.

@@ -1,14 +1,18 @@
 # Reproducibility
 
 Synthetic Pop is intended to produce repeatable synthetic communities from
-explicit inputs. This document records what is true in the current Milestone 3
-deterministic generation system and what must be true before alpha or v0
-generation is released.
+explicit inputs. This document records what is true in the current Milestone 4
+canonical data model and what must be true before alpha or v0 generation is
+released.
 
-## Current Milestone 3 Deterministic Generation System
+## Current Milestone 4 Canonical Data Model
 
 - The repository contains a Rust workspace with a core engine API, validation
-  primitives, deterministic RNG primitives, and reproducibility metadata.
+  primitives, deterministic RNG primitives, reproducibility metadata, and a
+  serde-ready canonical data model.
+- `synthetic_pop_core::model` defines canonical primitives and records for
+  users, profiles, usernames, personas, interests, statuses, posts, comments,
+  reactions, relationships, communities, organizations, and activity events.
 - `DeterministicRandom` and helper functions derive field-level values from
   `(seed, namespace, entity_id, field)` without shared mutable RNG state.
 - The deterministic RNG algorithm is identified by
