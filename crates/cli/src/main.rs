@@ -1,4 +1,3 @@
 fn main() {
-    println!("{}", synthetic_pop_cli::placeholder_message());
+    std::process::exit(synthetic_pop_cli::run());
 }
-

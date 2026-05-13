@@ -6,7 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+clap = { version = "4.5.4", features = ["derive"] }
 synthetic_pop_core = { path = "../core" }
+synthetic_pop_export = { path = "../export" }
 synthetic_pop_scenarios = { path = "../scenarios" }
 
 [lib]
