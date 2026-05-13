@@ -146,6 +146,12 @@ dependencies = [
 [[package]]
 name = "synthetic_pop_export"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "synthetic_pop_core",
+ "synthetic_pop_scenarios",
+]
 
 [[package]]
 name = "synthetic_pop_policy"
