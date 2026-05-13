@@ -92,21 +92,16 @@ impl ContentConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OutputFormat {
     Json,
+    #[default]
     Jsonl,
     Csv,
     SqliteSql,
     PostgresSql,
     PrismaSeed,
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        Self::Jsonl
-    }
 }
 
 pub fn parse_forum_config_yaml(input: &str) -> Result<ScenarioConfig, ScenarioConfigError> {
@@ -657,13 +652,11 @@ fn ymd_after_2026_01_01(mut days: usize) -> (usize, usize, usize) {
         31,
     ];
 
-    let mut month = 1;
-    for month_days in month_lengths {
+    for (month, month_days) in (1..).zip(month_lengths) {
         if days < month_days {
             return (year, month, days + 1);
         }
         days -= month_days;
-        month += 1;
     }
 
     unreachable!("day of year should map to a month")
