@@ -157,6 +157,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_yaml",
+ "synthetic_pop_core",
 ]
 
 [[package]]

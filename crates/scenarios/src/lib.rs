@@ -1,4 +1,10 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use synthetic_pop_core::{
+    random_bounded_u64, ActivityEvent, ActivityEventId, ActivityEventKind, ActivityObject, Comment,
+    CommentId, Community, CommunityId, Locale, ModelTimestamp, ModelValidationError, Post, PostId,
+    Relationship, RelationshipEndpoint, RelationshipId, RelationshipKind, User, UserId,
+};
 
 pub const FIRST_SCENARIO: &str = "forum";
 pub const MAX_USERS: usize = 100_000;
@@ -107,6 +113,605 @@ pub fn parse_forum_config_yaml(input: &str) -> Result<ScenarioConfig, ScenarioCo
     config.validate().map_err(ScenarioConfigError::Validation)?;
 
     Ok(config)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForumDataset {
+    pub users: Vec<User>,
+    pub communities: Vec<Community>,
+    pub posts: Vec<Post>,
+    pub comments: Vec<Comment>,
+    pub relationships: Vec<Relationship>,
+    pub activity_events: Vec<ActivityEvent>,
+}
+
+pub fn generate_forum_dataset(
+    config: &ForumScenarioConfig,
+) -> Result<ForumDataset, ForumGenerationError> {
+    config.validate()?;
+
+    let mut activity_events = Vec::new();
+    let communities = generate_communities(config, &mut activity_events)?;
+    let mut users = generate_users(config, &communities, &mut activity_events)?;
+    let relationships =
+        generate_memberships(config, &mut users, &communities, &mut activity_events)?;
+    let community_members = community_member_indexes(&users, &communities);
+    let community_indexes = community_indexes(&communities);
+    let posts = generate_posts(
+        config,
+        &users,
+        &communities,
+        &community_members,
+        &mut activity_events,
+    )?;
+    let comments = generate_comments(
+        config,
+        &users,
+        &posts,
+        &community_indexes,
+        &community_members,
+        &mut activity_events,
+    )?;
+
+    Ok(ForumDataset {
+        users,
+        communities,
+        posts,
+        comments,
+        relationships,
+        activity_events,
+    })
+}
+
+#[derive(Debug)]
+pub enum ForumGenerationError {
+    Validation(ScenarioValidationError),
+    Model(ModelValidationError),
+}
+
+impl std::fmt::Display for ForumGenerationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Validation(error) => write!(formatter, "invalid forum scenario config: {error}"),
+            Self::Model(error) => write!(formatter, "failed to build forum model record: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ForumGenerationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Validation(error) => Some(error),
+            Self::Model(error) => Some(error),
+        }
+    }
+}
+
+impl From<ScenarioValidationError> for ForumGenerationError {
+    fn from(error: ScenarioValidationError) -> Self {
+        Self::Validation(error)
+    }
+}
+
+impl From<ModelValidationError> for ForumGenerationError {
+    fn from(error: ModelValidationError) -> Self {
+        Self::Model(error)
+    }
+}
+
+const LOCALES: [&str; 5] = ["en-US", "en-GB", "en-CA", "en-AU", "en-NZ"];
+const FIRST_NAMES: [&str; 12] = [
+    "Alex", "Blair", "Casey", "Devon", "Emery", "Finley", "Harper", "Jordan", "Kai", "Morgan",
+    "Quinn", "Riley",
+];
+const LAST_NAMES: [&str; 12] = [
+    "Adams", "Brooks", "Chen", "Diaz", "Ellis", "Foster", "Gray", "Hayes", "Ibrahim", "Jones",
+    "Kim", "Lopez",
+];
+const POST_TOPICS: [&str; 8] = [
+    "launch notes",
+    "daily workflow",
+    "resource list",
+    "bug triage",
+    "community norms",
+    "tooling",
+    "roadmap",
+    "retrospective",
+];
+const COMMENT_TONES: [&str; 8] = [
+    "This matches what I have seen as well.",
+    "Could you share one more concrete example?",
+    "The second option seems easier to maintain.",
+    "I would document the tradeoff before changing it.",
+    "That should work for smaller teams first.",
+    "The edge case is worth testing before rollout.",
+    "Thanks for writing up the context.",
+    "I tried a similar approach last week.",
+];
+
+fn generate_communities(
+    config: &ForumScenarioConfig,
+    activity_events: &mut Vec<ActivityEvent>,
+) -> Result<Vec<Community>, ForumGenerationError> {
+    config
+        .communities
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let id = community_id(index, name)?;
+            let timestamp = timestamp_for("community", index)?;
+            let mut community = Community::new(id.clone(), name.trim(), timestamp.clone())?;
+            community.description = Some(format!("A forum space for {} discussions.", name.trim()));
+            community.owner_id = Some(user_id(index % config.population.users)?);
+            push_activity(
+                activity_events,
+                ActivityEventKind::CommunityJoined,
+                None,
+                ActivityObject::Community(id),
+                timestamp,
+            )?;
+            Ok(community)
+        })
+        .collect()
+}
+
+fn generate_users(
+    config: &ForumScenarioConfig,
+    communities: &[Community],
+    activity_events: &mut Vec<ActivityEvent>,
+) -> Result<Vec<User>, ForumGenerationError> {
+    (0..config.population.users)
+        .map(|index| {
+            let id = user_id(index)?;
+            let entity_id = id.as_str();
+            let first = choose(config, "users", entity_id, "first_name", &FIRST_NAMES);
+            let last = choose(config, "users", entity_id, "last_name", &LAST_NAMES);
+            let locale = choose(config, "users", entity_id, "locale", &LOCALES);
+            let timestamp = timestamp_for("user", index)?;
+            let mut user = User::new(
+                id.clone(),
+                format!(
+                    "{}.{}{:04}",
+                    first.to_lowercase(),
+                    last.to_lowercase(),
+                    index + 1
+                ),
+                format!("{first} {last}"),
+                Locale::new(*locale)?,
+                timestamp.clone(),
+            )?;
+            user.bio = Some(format!(
+                "{} follows {} and practical forum discussions.",
+                first,
+                communities[index % communities.len()].name
+            ));
+            user.status = Some("active".to_string());
+            push_activity(
+                activity_events,
+                ActivityEventKind::UserCreated,
+                Some(id.clone()),
+                ActivityObject::User(id),
+                timestamp,
+            )?;
+            Ok(user)
+        })
+        .collect()
+}
+
+fn generate_memberships(
+    config: &ForumScenarioConfig,
+    users: &mut [User],
+    communities: &[Community],
+    activity_events: &mut Vec<ActivityEvent>,
+) -> Result<Vec<Relationship>, ForumGenerationError> {
+    let mut relationships = Vec::new();
+
+    for (user_index, user) in users.iter_mut().enumerate() {
+        let primary = deterministic_index(
+            config,
+            "memberships",
+            user.id.as_str(),
+            "primary_community",
+            communities.len(),
+        );
+        push_membership(
+            &mut relationships,
+            activity_events,
+            user,
+            &communities[primary],
+            user_index,
+            primary,
+        )?;
+
+        if communities.len() > 1
+            && deterministic_index(config, "memberships", user.id.as_str(), "secondary_gate", 3)
+                == 0
+        {
+            let offset = deterministic_index(
+                config,
+                "memberships",
+                user.id.as_str(),
+                "secondary_community",
+                communities.len() - 1,
+            ) + 1;
+            let secondary = (primary + offset) % communities.len();
+            push_membership(
+                &mut relationships,
+                activity_events,
+                user,
+                &communities[secondary],
+                user_index,
+                secondary,
+            )?;
+        }
+    }
+
+    for (community_index, community) in communities.iter().enumerate() {
+        let has_member = users
+            .iter()
+            .any(|user| user.community_ids.contains(&community.id));
+
+        if !has_member {
+            let user_index = deterministic_index(
+                config,
+                "memberships",
+                community.id.as_str(),
+                "coverage_user",
+                users.len(),
+            );
+            push_membership(
+                &mut relationships,
+                activity_events,
+                &mut users[user_index],
+                community,
+                user_index,
+                community_index,
+            )?;
+        }
+    }
+
+    Ok(relationships)
+}
+
+fn push_membership(
+    relationships: &mut Vec<Relationship>,
+    activity_events: &mut Vec<ActivityEvent>,
+    user: &mut User,
+    community: &Community,
+    user_index: usize,
+    community_index: usize,
+) -> Result<(), ForumGenerationError> {
+    let relationship_index = relationships.len();
+    let relationship_id =
+        RelationshipId::new(format!("relationship-{:06}", relationship_index + 1))?;
+    let timestamp = timestamp_for("membership", user_index + community_index)?;
+
+    user.community_ids.push(community.id.clone());
+    relationships.push(Relationship {
+        id: relationship_id.clone(),
+        source: RelationshipEndpoint::User(user.id.clone()),
+        target: RelationshipEndpoint::Community(community.id.clone()),
+        kind: RelationshipKind::MemberOf,
+        created_at: timestamp.clone(),
+    });
+    push_activity(
+        activity_events,
+        ActivityEventKind::RelationshipCreated,
+        Some(user.id.clone()),
+        ActivityObject::Relationship(relationship_id),
+        timestamp,
+    )
+}
+
+fn generate_posts(
+    config: &ForumScenarioConfig,
+    users: &[User],
+    communities: &[Community],
+    community_members: &[Vec<usize>],
+    activity_events: &mut Vec<ActivityEvent>,
+) -> Result<Vec<Post>, ForumGenerationError> {
+    (0..config.content.posts)
+        .map(|index| {
+            let id = post_id(index)?;
+            let community_index =
+                deterministic_index(config, "posts", id.as_str(), "community", communities.len());
+            let community = &communities[community_index];
+            let author = choose_member(
+                config,
+                users,
+                &community_members[community_index],
+                id.as_str(),
+            );
+            let topic = choose(config, "posts", id.as_str(), "topic", &POST_TOPICS);
+            let timestamp = timestamp_for("post", index)?;
+            let mut post = Post::new(
+                id.clone(),
+                author.id.clone(),
+                format!(
+                    "{} started a thread about {} in {}.",
+                    author.display_name, topic, community.name
+                ),
+                timestamp.clone(),
+            )?;
+            post.community_id = Some(community.id.clone());
+            post.title = Some(format!("{}: {}", community.name, title_case(topic)));
+            push_activity(
+                activity_events,
+                ActivityEventKind::PostCreated,
+                Some(author.id.clone()),
+                ActivityObject::Post(id),
+                timestamp,
+            )?;
+            Ok(post)
+        })
+        .collect()
+}
+
+fn generate_comments(
+    config: &ForumScenarioConfig,
+    users: &[User],
+    posts: &[Post],
+    community_indexes: &HashMap<CommunityId, usize>,
+    community_members: &[Vec<usize>],
+    activity_events: &mut Vec<ActivityEvent>,
+) -> Result<Vec<Comment>, ForumGenerationError> {
+    (0..config.content.comments)
+        .map(|index| {
+            let id = comment_id(index)?;
+            let post_index =
+                deterministic_index(config, "comments", id.as_str(), "post", posts.len());
+            let post = &posts[post_index];
+            let community_id = post
+                .community_id
+                .as_ref()
+                .expect("generated posts always have a community");
+            let community_index = community_indexes
+                .get(community_id)
+                .expect("generated post community should exist");
+            let author = choose_comment_author(
+                config,
+                users,
+                &community_members[*community_index],
+                post.author_id.as_str(),
+                id.as_str(),
+            );
+            let body = choose(config, "comments", id.as_str(), "body", &COMMENT_TONES);
+            let timestamp = timestamp_for("comment", index)?;
+            let comment = Comment::new(
+                id.clone(),
+                post.id.clone(),
+                author.id.clone(),
+                *body,
+                timestamp.clone(),
+            )?;
+            push_activity(
+                activity_events,
+                ActivityEventKind::CommentCreated,
+                Some(author.id.clone()),
+                ActivityObject::Comment(id),
+                timestamp,
+            )?;
+            Ok(comment)
+        })
+        .collect()
+}
+
+fn choose_member<'a>(
+    config: &ForumScenarioConfig,
+    users: &'a [User],
+    members: &[usize],
+    entity_id: &str,
+) -> &'a User {
+    let index = deterministic_index(config, "posts", entity_id, "author", members.len());
+
+    &users[members[index]]
+}
+
+fn choose_comment_author<'a>(
+    config: &ForumScenarioConfig,
+    users: &'a [User],
+    members: &[usize],
+    post_author_id: &str,
+    entity_id: &str,
+) -> &'a User {
+    let offset = deterministic_index(config, "comments", entity_id, "author", members.len());
+    let author = &users[members[offset]];
+
+    if members.len() == 1 || author.id.as_str() != post_author_id {
+        return author;
+    }
+
+    &users[members[(offset + 1) % members.len()]]
+}
+
+fn community_member_indexes(users: &[User], communities: &[Community]) -> Vec<Vec<usize>> {
+    communities
+        .iter()
+        .map(|community| {
+            users
+                .iter()
+                .enumerate()
+                .filter_map(|(index, user)| {
+                    user.community_ids.contains(&community.id).then_some(index)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn community_indexes(communities: &[Community]) -> HashMap<CommunityId, usize> {
+    communities
+        .iter()
+        .enumerate()
+        .map(|(index, community)| (community.id.clone(), index))
+        .collect()
+}
+
+fn push_activity(
+    activity_events: &mut Vec<ActivityEvent>,
+    kind: ActivityEventKind,
+    actor_id: Option<UserId>,
+    object: ActivityObject,
+    occurred_at: ModelTimestamp,
+) -> Result<(), ForumGenerationError> {
+    let id = ActivityEventId::new(format!("activity-{:06}", activity_events.len() + 1))?;
+    activity_events.push(ActivityEvent {
+        id,
+        kind,
+        actor_id,
+        object,
+        occurred_at,
+    });
+
+    Ok(())
+}
+
+fn user_id(index: usize) -> Result<UserId, ModelValidationError> {
+    UserId::new(format!("user-{:06}", index + 1))
+}
+
+fn post_id(index: usize) -> Result<PostId, ModelValidationError> {
+    PostId::new(format!("post-{:06}", index + 1))
+}
+
+fn comment_id(index: usize) -> Result<CommentId, ModelValidationError> {
+    CommentId::new(format!("comment-{:06}", index + 1))
+}
+
+fn community_id(index: usize, name: &str) -> Result<CommunityId, ModelValidationError> {
+    CommunityId::new(format!("community-{:06}-{}", index + 1, slug(name)))
+}
+
+fn deterministic_index(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    field: &str,
+    len: usize,
+) -> usize {
+    let upper_bound = u64::try_from(len).expect("scenario count should fit in u64");
+    let index = random_bounded_u64(&config.seed, namespace, entity_id, field, upper_bound)
+        .expect("validated scenario counts must be non-zero");
+
+    usize::try_from(index).expect("bounded random index should fit in usize")
+}
+
+fn choose<'a, T>(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    field: &str,
+    values: &'a [T],
+) -> &'a T {
+    &values[deterministic_index(config, namespace, entity_id, field, values.len())]
+}
+
+fn timestamp_for(namespace: &str, index: usize) -> Result<ModelTimestamp, ModelValidationError> {
+    let base_minutes = match namespace {
+        "community" => 0,
+        "user" => 10_000,
+        "membership" => 20_000,
+        "post" => 30_000,
+        "comment" => 40_000,
+        _ => 50_000,
+    };
+
+    ModelTimestamp::new(timestamp_from_minutes(base_minutes + index * 7))
+}
+
+fn timestamp_from_minutes(minutes: usize) -> String {
+    let days = minutes / 1_440;
+    let minute_of_day = minutes % 1_440;
+    let hour = minute_of_day / 60;
+    let minute = minute_of_day % 60;
+    let (year, month, day) = ymd_after_2026_01_01(days);
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:00Z")
+}
+
+fn ymd_after_2026_01_01(mut days: usize) -> (usize, usize, usize) {
+    let mut year = 2026;
+
+    loop {
+        let year_days = if is_leap_year(year) { 366 } else { 365 };
+        if days < year_days {
+            break;
+        }
+        days -= year_days;
+        year += 1;
+    }
+
+    let month_lengths = [
+        31,
+        if is_leap_year(year) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+
+    let mut month = 1;
+    for month_days in month_lengths {
+        if days < month_days {
+            return (year, month, days + 1);
+        }
+        days -= month_days;
+        month += 1;
+    }
+
+    unreachable!("day of year should map to a month")
+}
+
+fn is_leap_year(year: usize) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn slug(value: &str) -> String {
+    let slug: String = value
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let slug = slug
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    if slug.is_empty() {
+        "community".to_string()
+    } else {
+        slug
+    }
+}
+
+fn title_case(value: &str) -> String {
+    let mut result = String::new();
+    for word in value.split_whitespace() {
+        if !result.is_empty() {
+            result.push(' ');
+        }
+        let mut chars = word.chars();
+        if let Some(first) = chars.next() {
+            result.push(first.to_ascii_uppercase());
+            result.push_str(chars.as_str());
+        }
+    }
+
+    result
 }
 
 #[derive(Debug)]
@@ -223,6 +828,7 @@ fn validate_communities(communities: &[String]) -> Result<(), ScenarioValidation
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synthetic_pop_core::{ActivityObject, RelationshipEndpoint};
 
     const VALID_FORUM_CONFIG: &str = r#"
 scenario: forum
@@ -367,6 +973,215 @@ output_format: postgres-sql
         match error {
             ScenarioConfigError::Validation(actual) => assert_eq!(actual, expected),
             ScenarioConfigError::Yaml(error) => panic!("expected validation error, got {error}"),
+        }
+    }
+
+    #[test]
+    fn generates_expected_forum_record_counts() {
+        let dataset = generate_forum_dataset(&small_forum_config()).expect("dataset should build");
+
+        assert_eq!(dataset.users.len(), 4);
+        assert_eq!(dataset.communities.len(), 2);
+        assert_eq!(dataset.posts.len(), 5);
+        assert_eq!(dataset.comments.len(), 7);
+        assert!(dataset.relationships.len() >= dataset.users.len());
+        assert_eq!(
+            dataset.activity_events.len(),
+            dataset.communities.len()
+                + dataset.users.len()
+                + dataset.relationships.len()
+                + dataset.posts.len()
+                + dataset.comments.len()
+        );
+    }
+
+    #[test]
+    fn forum_generation_is_deterministic_for_same_config() {
+        let config = small_forum_config();
+
+        let first = generate_forum_dataset(&config).expect("first dataset should build");
+        let second = generate_forum_dataset(&config).expect("second dataset should build");
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn forum_generation_changes_with_seed() {
+        let first_config = small_forum_config();
+        let mut second_config = small_forum_config();
+        second_config.seed = "milestone-5-other".to_string();
+
+        let first = generate_forum_dataset(&first_config).expect("first dataset should build");
+        let second = generate_forum_dataset(&second_config).expect("second dataset should build");
+
+        assert_ne!(first.users[0].display_name, second.users[0].display_name);
+    }
+
+    #[test]
+    fn generated_forum_records_have_representative_stable_values() {
+        let dataset = generate_forum_dataset(&small_forum_config()).expect("dataset should build");
+
+        assert_eq!(dataset.users[0].id.as_str(), "user-000001");
+        assert_eq!(dataset.users[0].username, "harper.gray0001");
+        assert_eq!(dataset.users[0].display_name, "Harper Gray");
+        assert_eq!(dataset.users[0].created_at.as_str(), "2026-01-07T22:40:00Z");
+        assert_eq!(
+            dataset.communities[0].id.as_str(),
+            "community-000001-general"
+        );
+        assert_eq!(
+            dataset.communities[0].description.as_deref(),
+            Some("A forum space for general discussions.")
+        );
+        assert_eq!(dataset.posts[0].id.as_str(), "post-000001");
+        assert_eq!(dataset.posts[0].author_id.as_str(), "user-000001");
+        assert_eq!(
+            dataset.posts[0]
+                .community_id
+                .as_ref()
+                .map(CommunityId::as_str),
+            Some("community-000001-general")
+        );
+        assert_eq!(dataset.posts[0].title.as_deref(), Some("general: Roadmap"));
+        assert_eq!(
+            dataset.posts[0].body,
+            "Harper Gray started a thread about roadmap in general."
+        );
+        assert_eq!(dataset.comments[0].id.as_str(), "comment-000001");
+        assert_eq!(dataset.comments[0].post_id.as_str(), "post-000005");
+        assert_eq!(
+            dataset.comments[0].body,
+            "I would document the tradeoff before changing it."
+        );
+    }
+
+    #[test]
+    fn validates_config_before_forum_generation() {
+        let mut config = small_forum_config();
+        config.seed = "  ".to_string();
+
+        let error = generate_forum_dataset(&config).expect_err("invalid config should fail");
+
+        match error {
+            ForumGenerationError::Validation(actual) => {
+                assert_eq!(actual, ScenarioValidationError::EmptySeed);
+            }
+            ForumGenerationError::Model(error) => panic!("expected validation error, got {error}"),
+        }
+    }
+
+    #[test]
+    fn generated_relationships_and_activity_events_are_consistent() {
+        let dataset = generate_forum_dataset(&small_forum_config()).expect("dataset should build");
+
+        for relationship in &dataset.relationships {
+            let RelationshipEndpoint::User(user_id) = &relationship.source else {
+                panic!("membership source should be a user");
+            };
+            let RelationshipEndpoint::Community(community_id) = &relationship.target else {
+                panic!("membership target should be a community");
+            };
+            let user = dataset
+                .users
+                .iter()
+                .find(|candidate| &candidate.id == user_id)
+                .expect("relationship user should exist");
+
+            assert!(user.community_ids.contains(community_id));
+            assert!(dataset
+                .communities
+                .iter()
+                .any(|community| &community.id == community_id));
+            assert!(dataset.activity_events.iter().any(|event| {
+                event.actor_id.as_ref() == Some(user_id)
+                    && event.object == ActivityObject::Relationship(relationship.id.clone())
+            }));
+        }
+
+        for post in &dataset.posts {
+            let community_id = post
+                .community_id
+                .as_ref()
+                .expect("generated post should have a community");
+            let author = dataset
+                .users
+                .iter()
+                .find(|user| user.id == post.author_id)
+                .expect("post author should exist");
+
+            assert!(author.community_ids.contains(community_id));
+            assert!(dataset.activity_events.iter().any(|event| {
+                event.actor_id.as_ref() == Some(&post.author_id)
+                    && event.object == ActivityObject::Post(post.id.clone())
+            }));
+        }
+
+        for comment in &dataset.comments {
+            assert!(dataset.posts.iter().any(|post| post.id == comment.post_id));
+            assert!(dataset
+                .users
+                .iter()
+                .any(|user| user.id == comment.author_id));
+            assert!(dataset.activity_events.iter().any(|event| {
+                event.actor_id.as_ref() == Some(&comment.author_id)
+                    && event.object == ActivityObject::Comment(comment.id.clone())
+            }));
+        }
+    }
+
+    #[test]
+    fn generation_keeps_every_community_usable_for_post_authors() {
+        let config = ForumScenarioConfig {
+            seed: "sparse-membership".to_string(),
+            population: PopulationConfig { users: 1 },
+            communities: vec![
+                "general".to_string(),
+                "support".to_string(),
+                "announcements".to_string(),
+            ],
+            content: ContentConfig {
+                posts: 12,
+                comments: 12,
+            },
+            output_format: OutputFormat::Jsonl,
+        };
+
+        let dataset = generate_forum_dataset(&config).expect("dataset should build");
+
+        for community in &dataset.communities {
+            assert!(
+                dataset
+                    .users
+                    .iter()
+                    .any(|user| user.community_ids.contains(&community.id)),
+                "{} should have at least one member",
+                community.id
+            );
+        }
+        for post in &dataset.posts {
+            let author = dataset
+                .users
+                .iter()
+                .find(|user| user.id == post.author_id)
+                .expect("post author should exist");
+            assert!(author.community_ids.contains(
+                post.community_id
+                    .as_ref()
+                    .expect("generated post should have a community")
+            ));
+        }
+    }
+
+    fn small_forum_config() -> ForumScenarioConfig {
+        ForumScenarioConfig {
+            seed: "milestone-5".to_string(),
+            population: PopulationConfig { users: 4 },
+            communities: vec!["general".to_string(), "support".to_string()],
+            content: ContentConfig {
+                posts: 5,
+                comments: 7,
+            },
+            output_format: OutputFormat::Jsonl,
         }
     }
 }
