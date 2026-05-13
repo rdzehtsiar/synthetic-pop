@@ -159,9 +159,19 @@ pub fn status_message() -> String {
     } else {
         "canonical data model is not available"
     };
+    let generation_status = if capabilities.generation_available {
+        "forum generation is available"
+    } else {
+        "forum generation is not available"
+    };
+    let export_status = if capabilities.export_available {
+        "exports are available"
+    } else {
+        "exports are not available"
+    };
     format!(
         "{PRODUCT_NAME}: {PROJECT_PROMISE} ({status}).\n\
-         {core_status}; {deterministic_rng_status}; {canonical_data_model_status}; Generation command available: {PRODUCT_NAME} generate forum.",
+         {core_status}; {deterministic_rng_status}; {canonical_data_model_status}; {generation_status}; {export_status}; Generation command available: {PRODUCT_NAME} generate forum.",
         status = current_status().label()
     )
 }
@@ -307,8 +317,11 @@ mod tests {
         let message = status_message();
 
         assert!(message.contains("Rust core foundation is available"));
+        assert!(message.contains("milestone 5 scenario generation and export"));
         assert!(message.contains("deterministic RNG is available"));
         assert!(message.contains("canonical data model is available"));
+        assert!(message.contains("forum generation is available"));
+        assert!(message.contains("exports are available"));
         assert!(message.contains("Generation command available"));
         assert!(!message.contains("Generation commands are not implemented yet"));
         assert!(message.contains("synthetic-pop generate forum"));

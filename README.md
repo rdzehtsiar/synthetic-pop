@@ -1,27 +1,28 @@
 # Synthetic Pop
 
-Synthetic Pop is planned as an offline, deterministic synthetic community
-generator for demos, staging data, simulations, and repeatable test fixtures.
-The first product wedge remains a forum community generator that can eventually
-produce synthetic users, profiles, relationships, and activity from explicit
-inputs.
+Synthetic Pop is an offline, deterministic synthetic community generator for
+demos, staging data, simulations, and repeatable test fixtures. The first
+implemented product wedge is a forum community generator that produces
+synthetic users, communities, posts, comments, membership relationships, and
+activity events from explicit inputs.
 
-Current status: Milestone 4 canonical data model. The repository now contains a
-small Rust workspace with a core engine API, request validation primitives,
-deterministic field-level RNG primitives, reproducibility metadata, a
-serde-ready canonical model, and truthful capability flags. It does not generate
-data yet.
+Current status: Milestone 5 scenario generation and export. The Rust workspace
+contains a core engine API, request validation primitives, deterministic
+field-level RNG primitives, reproducibility metadata, a serde-ready canonical
+model, forum scenario generation, CLI generation, and forum dataset exports.
+Policy filtering, language bindings, desktop, and WASM surfaces are still
+unavailable.
 
 ## Rust Core Foundation
 
 `crates/core` exposes the implemented foundation:
 
-- `current_status()` reports `milestone 4 canonical data model`.
+- `current_status()` reports `milestone 5 scenario generation and export`.
 - `CoreEngine` owns a `CoreEngineConfig` and exposes current capabilities.
-- `CoreCapabilities` marks the offline/local core and deterministic RNG as
-  available, marks the canonical data model as available, and keeps generation,
-  policy filtering, exports, bindings, desktop, and WASM unavailable.
-- `Seed`, `GenerationSize`, and `CoreRunRequest` validate request inputs only.
+- `CoreCapabilities` marks the offline/local core, deterministic RNG,
+  canonical data model, forum generation, and exports as available. Policy
+  filtering, bindings, desktop, and WASM remain unavailable.
+- `Seed`, `GenerationSize`, and `CoreRunRequest` validate request inputs.
   Empty seeds, zero sizes, and sizes above `100_000` are rejected.
 - `DeterministicRandom` and the helper functions `random_u64`,
   `random_bounded_u64`, `random_bool`, `random_index`, and `random_choice`
@@ -32,37 +33,76 @@ data yet.
 - `synthetic_pop_core::model` defines the canonical record surface for users,
   profiles, usernames, personas, interests, statuses, posts, comments,
   reactions, relationships, communities, organizations, and activity events.
-  The model uses string-backed ID/value primitives, derives serde traits for
-  JSON-ready records, rejects empty primitive values, and provides lightweight
-  constructors for required entity fields.
 
-The core API now has deterministic RNG primitives and canonical record types,
-but `CoreRunRequest` still does not run a scenario and no synthetic records are
-produced.
+## Forum Scenario Config
 
-## CLI Status
+The forum scenario accepts YAML with this shape:
 
-The `synthetic-pop` binary is still a placeholder. It prints the current core
-status, states that deterministic RNG and the canonical data model are
-available, states that generation commands are not implemented, and points to
-the planned first command shape:
-
-```sh
-synthetic-pop generate forum --seed demo --users 10000
+```yaml
+scenario: forum
+seed: demo
+population:
+  users: 100
+communities:
+  - general
+  - support
+content:
+  posts: 500
+  comments: 1000
+output_format: jsonl
 ```
 
-That command shape is documentation for the intended interface; it is not
-implemented yet.
+`output_format` is optional and defaults to `jsonl`. Supported values are
+`json`, `jsonl`, `csv`, `sqlite-sql`, `postgres-sql`, and `prisma-seed`.
+`population.user_count`, `content.post_count`, and `content.comment_count` are
+accepted as aliases for `users`, `posts`, and `comments`.
+
+## CLI
+
+Generate from direct flags:
+
+```sh
+synthetic-pop generate forum \
+  --seed demo \
+  --users 100 \
+  --communities general,support \
+  --posts 500 \
+  --comments 1000 \
+  --format jsonl
+```
+
+Generate from a config file and write an export:
+
+```sh
+synthetic-pop generate forum \
+  --config scenario.yml \
+  --format postgres-sql \
+  --output forum.sql
+```
+
+The CLI supports `json`, `jsonl`, `csv`, `sqlite-sql`, `postgres-sql`, and
+`prisma-seed` exports. When `--output` is omitted, output is written to stdout.
+
+## Determinism
+
+For the same supported inputs, the forum generator and exporters produce the
+same dataset and export text. Deterministic derivation is based on the explicit
+seed, scenario config, deterministic RNG algorithm, and selected export format.
+Changing the seed, counts, community list, or format can change the output.
+
+Synthetic Pop does not currently apply policy filtering or external data-pack
+loading to generated records. Do not treat generated output as policy-screened
+content.
 
 ## Repository Layout
 
-- `crates/core`: Milestone 4 Rust core foundation with deterministic RNG
-  primitives, reproducibility metadata, canonical model types, and
-  validation-only engine API.
-- `crates/cli`: placeholder CLI binary and CLI-facing status message.
+- `crates/core`: Rust core foundation with deterministic RNG primitives,
+  reproducibility metadata, canonical model types, and capability status.
+- `crates/scenarios`: implemented `forum` scenario config parsing and dataset
+  generation.
+- `crates/export`: implemented forum dataset exports.
+- `crates/cli`: CLI status and `generate forum` command.
 - `crates/policy`: deferred policy filtering surface.
-- `crates/export`: deferred export surface.
-- `crates/scenarios`: planned scenario metadata, starting with `forum`.
 - `apps/desktop`: placeholder for a future desktop application.
 - `apps/web-demo`: placeholder for a future web demo or WASM-backed surface.
 - `bindings/python`: placeholder for future Python bindings.
@@ -73,10 +113,8 @@ implemented yet.
 
 ## Trust Documents
 
-The trust documents define project boundaries while generation remains deferred:
-
-- `REPRODUCIBILITY.md`: current guarantees and future deterministic output
-  requirements.
+- `REPRODUCIBILITY.md`: current deterministic generation/export guarantees and
+  future compatibility requirements.
 - `DATA_PROVENANCE.md`: provenance rules for future data packs and examples.
 - `SAFETY_POLICY.md`: allowed and disallowed uses, plus future policy checks.
 - `OFFLINE_GUARANTEE.md`: offline-first expectations for the core generation
@@ -98,8 +136,7 @@ See `docs/QUALITY.md` for the expected outcome and current test scope.
 
 ## Deferred Work
 
-Scenario output, generated datasets, CLI generation, policy filtering, export
-formats, data pack loading, packaged examples, desktop app, web app, Tauri
-integration, WASM, and language bindings remain deferred. They are represented
-only by placeholders or capability flags until later milestones define and
-implement their behavior.
+Policy filtering, data pack loading, packaged examples, desktop app, web app,
+Tauri integration, WASM, and language bindings remain deferred. They are
+represented only by placeholders or capability flags until later milestones
+define and implement their behavior.

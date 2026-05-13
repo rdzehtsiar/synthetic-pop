@@ -1,9 +1,9 @@
 # Quality Checks
 
-Milestone 4 validation proves the Rust core foundation compiles, deterministic
-RNG primitives behave as documented, the canonical data model is serde-ready,
-reproducibility metadata is exposed, and deferred surfaces do not claim unbuilt
-functionality.
+Milestone 5 validation proves the Rust workspace compiles, deterministic RNG
+primitives behave as documented, the canonical data model is serde-ready, forum
+scenario generation works, supported exports are available, and deferred
+surfaces do not claim unbuilt functionality.
 
 ## Required Local Commands
 
@@ -19,21 +19,23 @@ Expected outcome:
 
 - `cargo build` compiles the full Rust workspace.
 - `cargo test` runs the crate tests for the core API, canonical model
-  primitives/entities/validation, deterministic RNG golden vectors, CLI status
-  placeholder, and deferred policy/export/scenario surfaces.
+  primitives/entities/validation, deterministic RNG golden vectors, forum
+  scenario config/generation, export formats, CLI generation, and deferred
+  policy surfaces.
 - `cargo clippy --all-targets --all-features` reports no warnings.
 
 ## Current Test Scope
 
 The current tests validate deterministic RNG primitives, canonical model
-records, and milestone boundaries, not generated forum data. They check that:
+records, milestone boundaries, generated forum data, and forum exports. They
+check that:
 
-- product identity and `milestone 4 canonical data model` status are exposed by
-  the core crate;
+- product identity and `milestone 5 scenario generation and export` status are
+  exposed by the core crate;
 - `CoreEngine` can be constructed with default or explicit config;
-- core capabilities truthfully report offline/local core and deterministic RNG
-  availability, report the canonical data model as available, and keep
-  generation, policy, exports, bindings, desktop, and WASM unavailable;
+- core capabilities truthfully report offline/local core, deterministic RNG,
+  canonical data model, generation, and export availability, while keeping
+  policy, bindings, desktop, and WASM unavailable;
 - `Seed`, `GenerationSize`, and `CoreRunRequest` accept valid inputs and reject
   empty seeds, zero sizes, and sizes above `100_000`;
 - `synthetic_pop_core::model` exposes string-backed ID/value primitives, shared
@@ -49,14 +51,17 @@ records, and milestone boundaries, not generated forum data. They check that:
   call-order independence, and parallel-safe derivation remain stable;
 - reproducibility metadata exposes the current metadata and RNG algorithm
   versions;
-- the CLI message names the planned `generate forum` command while stating that
-  deterministic RNG and the canonical data model are available and generation
-  commands are not implemented;
-- policy and export crates remain disabled;
-- the first planned scenario remains `forum`.
+- the first implemented scenario is `forum`;
+- forum scenario YAML is validated, generation is deterministic for the same
+  config, and changing the seed changes generated output;
+- export tests cover JSON, JSONL, CSV, SQLite SQL, PostgreSQL SQL, and Prisma
+  seed output;
+- the CLI status and `generate forum` command reflect implemented generation
+  and export behavior;
+- the policy crate remains disabled.
 
-Do not add generated user/post/forum fixtures, policy simulation tests, export
-golden files, Tauri/WASM checks, or binding tests until those surfaces exist.
+Policy simulation tests, data-pack fixture tests, Tauri/WASM checks, and
+binding tests should wait until those surfaces exist.
 
 ## Repository Hygiene
 

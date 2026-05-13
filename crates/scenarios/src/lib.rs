@@ -14,11 +14,12 @@ pub const MAX_CONTENT_ITEMS: usize = 1_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScenarioState {
     Planned,
+    Implemented,
 }
 
 #[must_use]
 pub const fn first_scenario_state() -> ScenarioState {
-    ScenarioState::Planned
+    ScenarioState::Implemented
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -847,7 +848,7 @@ output_format: jsonl
     #[test]
     fn first_scenario_matches_the_initial_wedge() {
         assert_eq!(FIRST_SCENARIO, "forum");
-        assert_eq!(first_scenario_state(), ScenarioState::Planned);
+        assert_eq!(first_scenario_state(), ScenarioState::Implemented);
     }
 
     #[test]

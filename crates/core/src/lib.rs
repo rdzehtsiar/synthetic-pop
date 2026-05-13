@@ -26,6 +26,7 @@ pub enum MilestoneStatus {
     RustCoreFoundation,
     DeterministicGenerationSystem,
     CanonicalDataModel,
+    ScenarioGenerationAndExport,
 }
 
 impl MilestoneStatus {
@@ -36,13 +37,14 @@ impl MilestoneStatus {
             Self::RustCoreFoundation => "milestone 2 rust core foundation",
             Self::DeterministicGenerationSystem => "milestone 3 deterministic generation system",
             Self::CanonicalDataModel => "milestone 4 canonical data model",
+            Self::ScenarioGenerationAndExport => "milestone 5 scenario generation and export",
         }
     }
 }
 
 #[must_use]
 pub const fn current_status() -> MilestoneStatus {
-    MilestoneStatus::CanonicalDataModel
+    MilestoneStatus::ScenarioGenerationAndExport
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +138,22 @@ impl CoreCapabilities {
             generation_available: false,
             policy_available: false,
             export_available: false,
+            bindings_available: false,
+            desktop_available: false,
+            wasm_available: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn scenario_generation_and_export() -> Self {
+        Self {
+            offline_core_available: true,
+            local_core_available: true,
+            deterministic_rng_available: true,
+            canonical_data_model_available: true,
+            generation_available: true,
+            policy_available: false,
+            export_available: true,
             bindings_available: false,
             desktop_available: false,
             wasm_available: false,
@@ -492,7 +510,7 @@ impl CoreEngine {
 
     #[must_use]
     pub const fn capabilities(&self) -> CoreCapabilities {
-        CoreCapabilities::canonical_data_model()
+        CoreCapabilities::scenario_generation_and_export()
     }
 
     pub fn validate_run_request(
@@ -566,9 +584,15 @@ mod tests {
     }
 
     #[test]
-    fn current_status_reports_canonical_data_model() {
-        assert_eq!(current_status(), MilestoneStatus::CanonicalDataModel);
-        assert_eq!(current_status().label(), "milestone 4 canonical data model");
+    fn current_status_reports_scenario_generation_and_export() {
+        assert_eq!(
+            current_status(),
+            MilestoneStatus::ScenarioGenerationAndExport
+        );
+        assert_eq!(
+            current_status().label(),
+            "milestone 5 scenario generation and export"
+        );
     }
 
     #[test]
@@ -630,6 +654,19 @@ mod tests {
         assert!(!deterministic.bindings_available);
         assert!(!deterministic.desktop_available);
         assert!(!deterministic.wasm_available);
+
+        let current = CoreCapabilities::scenario_generation_and_export();
+
+        assert!(current.offline_core_available);
+        assert!(current.local_core_available);
+        assert!(current.deterministic_rng_available);
+        assert!(current.canonical_data_model_available);
+        assert!(current.generation_available);
+        assert!(!current.policy_available);
+        assert!(current.export_available);
+        assert!(!current.bindings_available);
+        assert!(!current.desktop_available);
+        assert!(!current.wasm_available);
     }
 
     #[test]
@@ -640,9 +677,9 @@ mod tests {
         assert!(capabilities.local_core_available);
         assert!(capabilities.deterministic_rng_available);
         assert!(capabilities.canonical_data_model_available);
-        assert!(!capabilities.generation_available);
+        assert!(capabilities.generation_available);
         assert!(!capabilities.policy_available);
-        assert!(!capabilities.export_available);
+        assert!(capabilities.export_available);
         assert!(!capabilities.bindings_available);
         assert!(!capabilities.desktop_available);
         assert!(!capabilities.wasm_available);

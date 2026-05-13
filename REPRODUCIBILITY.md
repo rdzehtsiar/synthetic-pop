@@ -1,18 +1,23 @@
 # Reproducibility
 
-Synthetic Pop is intended to produce repeatable synthetic communities from
-explicit inputs. This document records what is true in the current Milestone 4
-canonical data model and what must be true before alpha or v0 generation is
-released.
+Synthetic Pop produces repeatable synthetic communities from explicit inputs.
+This document records what is true in the current Milestone 5 scenario
+generation and export surface and what must be true before v0.
 
-## Current Milestone 4 Canonical Data Model
+## Current Milestone 5 Scenario Generation And Export
 
 - The repository contains a Rust workspace with a core engine API, validation
-  primitives, deterministic RNG primitives, reproducibility metadata, and a
-  serde-ready canonical data model.
+  primitives, deterministic RNG primitives, reproducibility metadata, a
+  serde-ready canonical data model, forum scenario generation, and forum
+  dataset exports.
 - `synthetic_pop_core::model` defines canonical primitives and records for
   users, profiles, usernames, personas, interests, statuses, posts, comments,
   reactions, relationships, communities, organizations, and activity events.
+- `synthetic_pop_scenarios` parses validated forum configs and generates
+  users, communities, posts, comments, membership relationships, and activity
+  events.
+- `synthetic_pop_export` exports forum datasets as `json`, `jsonl`, `csv`,
+  `sqlite-sql`, `postgres-sql`, and `prisma-seed`.
 - `DeterministicRandom` and helper functions derive field-level values from
   `(seed, namespace, entity_id, field)` without shared mutable RNG state.
 - The deterministic RNG algorithm is identified by
@@ -20,25 +25,38 @@ released.
   and exposed through `reproducibility_metadata()`.
 - Golden tests pin representative RNG outputs and verify order-independent and
   parallel-safe derivation.
-- There is no implemented data model generator, scenario runner, exporter, data
-  pack loader, desktop app, WASM surface, or language binding yet.
-- The CLI is a placeholder only and does not produce synthetic data.
-- The current reproducibility guarantee is limited to the documented RNG
-  primitives, metadata, source control reviewability, and repeatable local
-  validation.
+- For the same supported seed, forum config, generator/export code, and export
+  format, the generated dataset and export text are expected to be identical.
+- There is no implemented policy filter, data pack loader, desktop app, WASM
+  surface, or language binding yet.
 
-## Required Before Alpha Generation
+## Current Input Surface
 
-- Every generated dataset must be derived from explicit inputs: generator version, scenario version, seed, configuration, data pack versions, and export format.
-- The same supported input set must produce the same output on every supported platform.
-- Scenario randomness must use the deterministic namespace-based RNG so work can
-  be parallelized without changing results.
-- Outputs must include enough metadata to reproduce the run later.
-- Snapshot tests must cover representative scenarios and detect unintended output drift.
+Forum config is explicit YAML:
+
+```yaml
+scenario: forum
+seed: demo
+population:
+  users: 100
+communities:
+  - general
+  - support
+content:
+  posts: 500
+  comments: 1000
+output_format: jsonl
+```
+
+`output_format` defaults to `jsonl`. The CLI may override the config format
+with `--format`.
 
 ## Required Before v0
 
 - Reproducibility rules must be treated as compatibility commitments.
-- Any intentional output change must be documented with a version bump or migration note.
+- Any intentional output change must be documented with a version bump or
+  migration note.
+- Outputs should include enough metadata to reproduce the run later.
 - Release artifacts should be built through documented, repeatable commands.
-- Benchmarks and fixture datasets must identify the exact version and configuration used to create them.
+- Benchmarks and fixture datasets must identify the exact version and
+  configuration used to create them.
