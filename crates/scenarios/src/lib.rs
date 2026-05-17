@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use synthetic_pop_core::{
-    random_bounded_u64, ActivityEvent, ActivityEventId, ActivityEventKind, ActivityObject, Comment,
-    CommentId, Community, CommunityId, Locale, ModelTimestamp, ModelValidationError, Post, PostId,
-    Relationship, RelationshipEndpoint, RelationshipId, RelationshipKind, User, UserId,
+    random_bounded_u64, ActivityEvent, ActivityEventId, ActivityEventKind, ActivityObject,
+    ActivityPattern, Comment, CommentId, Community, CommunityId, Locale, ModelTimestamp,
+    ModelValidationError, Persona, PersonaId, Post, PostId, Relationship, RelationshipEndpoint,
+    RelationshipId, RelationshipKind, SleepPhase, User, UserId, Verbosity,
 };
 
 pub const FIRST_SCENARIO: &str = "forum";
@@ -111,9 +112,10 @@ pub fn parse_forum_config_yaml(input: &str) -> Result<ScenarioConfig, ScenarioCo
     Ok(config)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ForumDataset {
     pub users: Vec<User>,
+    pub personas: Vec<Persona>,
     pub communities: Vec<Community>,
     pub posts: Vec<Post>,
     pub comments: Vec<Comment>,
@@ -129,6 +131,7 @@ pub fn generate_forum_dataset(
     let mut activity_events = Vec::new();
     let communities = generate_communities(config, &mut activity_events)?;
     let mut users = generate_users(config, &communities, &mut activity_events)?;
+    let personas = generate_personas(config, &mut users, &mut activity_events)?;
     let relationships =
         generate_memberships(config, &mut users, &communities, &mut activity_events)?;
     let community_members = community_member_indexes(&users, &communities);
@@ -151,6 +154,7 @@ pub fn generate_forum_dataset(
 
     Ok(ForumDataset {
         users,
+        personas,
         communities,
         posts,
         comments,
@@ -224,6 +228,20 @@ const COMMENT_TONES: [&str; 8] = [
     "Thanks for writing up the context.",
     "I tried a similar approach last week.",
 ];
+const VERBOSITIES: [Verbosity; 3] = [Verbosity::Terse, Verbosity::Balanced, Verbosity::Detailed];
+const SLEEP_PHASES: [SleepPhase; 4] = [
+    SleepPhase::EarlyBird,
+    SleepPhase::Daytime,
+    SleepPhase::NightOwl,
+    SleepPhase::Irregular,
+];
+const ACTIVITY_PATTERNS: [ActivityPattern; 5] = [
+    ActivityPattern::Lurker,
+    ActivityPattern::Casual,
+    ActivityPattern::Regular,
+    ActivityPattern::Bursty,
+    ActivityPattern::PowerUser,
+];
 
 fn generate_communities(
     config: &ForumScenarioConfig,
@@ -290,6 +308,77 @@ fn generate_users(
                 timestamp,
             )?;
             Ok(user)
+        })
+        .collect()
+}
+
+fn generate_personas(
+    config: &ForumScenarioConfig,
+    users: &mut [User],
+    activity_events: &mut Vec<ActivityEvent>,
+) -> Result<Vec<Persona>, ForumGenerationError> {
+    users
+        .iter_mut()
+        .enumerate()
+        .map(|(index, user)| {
+            let id = persona_id(index)?;
+            let entity_id = id.as_str();
+            let timestamp = timestamp_for("persona", index)?;
+            let verbosity = *choose(config, "personas", entity_id, "verbosity", &VERBOSITIES);
+            let sleep_phase = *choose(config, "personas", entity_id, "sleep_phase", &SLEEP_PHASES);
+            let activity_pattern = *choose(
+                config,
+                "personas",
+                entity_id,
+                "activity_pattern",
+                &ACTIVITY_PATTERNS,
+            );
+            let openness = persona_score(config, entity_id, "openness");
+            let extroversion = persona_score(config, entity_id, "extroversion");
+            let conscientiousness = persona_score(config, entity_id, "conscientiousness");
+            let agreeableness = persona_score(config, entity_id, "agreeableness");
+            let neuroticism = persona_score(config, entity_id, "neuroticism");
+            let posting_frequency = persona_score(config, entity_id, "posting_frequency");
+            let controversy_affinity = persona_score(config, entity_id, "controversy_affinity");
+            let humor_affinity = persona_score(config, entity_id, "humor_affinity");
+            let technical_depth = persona_score(config, entity_id, "technical_depth");
+            let meme_affinity = persona_score(config, entity_id, "meme_affinity");
+            let mut persona = Persona::new(
+                id.clone(),
+                user.id.clone(),
+                persona_summary(verbosity, activity_pattern, technical_depth, humor_affinity),
+                timestamp.clone(),
+            )?;
+            persona.traits = persona_traits(
+                openness,
+                extroversion,
+                conscientiousness,
+                agreeableness,
+                technical_depth,
+                meme_affinity,
+            );
+            persona.openness = openness;
+            persona.extroversion = extroversion;
+            persona.conscientiousness = conscientiousness;
+            persona.agreeableness = agreeableness;
+            persona.neuroticism = neuroticism;
+            persona.posting_frequency = posting_frequency;
+            persona.controversy_affinity = controversy_affinity;
+            persona.humor_affinity = humor_affinity;
+            persona.technical_depth = technical_depth;
+            persona.meme_affinity = meme_affinity;
+            persona.verbosity = verbosity;
+            persona.sleep_phase = sleep_phase;
+            persona.activity_pattern = activity_pattern;
+            user.persona_id = Some(id.clone());
+            push_activity(
+                activity_events,
+                ActivityEventKind::PersonaCreated,
+                Some(user.id.clone()),
+                ActivityObject::Persona(id),
+                timestamp,
+            )?;
+            Ok(persona)
         })
         .collect()
 }
@@ -574,8 +663,69 @@ fn comment_id(index: usize) -> Result<CommentId, ModelValidationError> {
     CommentId::new(format!("comment-{:06}", index + 1))
 }
 
+fn persona_id(index: usize) -> Result<PersonaId, ModelValidationError> {
+    PersonaId::new(format!("persona-{:06}", index + 1))
+}
+
 fn community_id(index: usize, name: &str) -> Result<CommunityId, ModelValidationError> {
     CommunityId::new(format!("community-{:06}-{}", index + 1, slug(name)))
+}
+
+fn persona_score(config: &ForumScenarioConfig, entity_id: &str, field: &str) -> f32 {
+    let value = random_bounded_u64(&config.seed, "personas", entity_id, field, 1_001)
+        .expect("non-zero persona score bound should produce a value");
+
+    (value as f32) / 1_000.0
+}
+
+fn persona_summary(
+    verbosity: Verbosity,
+    activity_pattern: ActivityPattern,
+    technical_depth: f32,
+    humor_affinity: f32,
+) -> String {
+    let detail = if technical_depth >= 0.67 {
+        "technical"
+    } else if humor_affinity >= 0.67 {
+        "playful"
+    } else {
+        "practical"
+    };
+    let cadence = match activity_pattern {
+        ActivityPattern::Lurker => "quiet reader",
+        ActivityPattern::Casual => "casual participant",
+        ActivityPattern::Regular => "regular contributor",
+        ActivityPattern::Bursty => "bursty contributor",
+        ActivityPattern::PowerUser => "high-volume contributor",
+    };
+    let style = match verbosity {
+        Verbosity::Terse => "concise",
+        Verbosity::Balanced => "balanced",
+        Verbosity::Detailed => "detailed",
+    };
+
+    format!("{style} {detail} {cadence}")
+}
+
+fn persona_traits(
+    openness: f32,
+    extroversion: f32,
+    conscientiousness: f32,
+    agreeableness: f32,
+    technical_depth: f32,
+    meme_affinity: f32,
+) -> Vec<String> {
+    [
+        (openness, "curious"),
+        (extroversion, "social"),
+        (conscientiousness, "organized"),
+        (agreeableness, "supportive"),
+        (technical_depth, "technical"),
+        (meme_affinity, "playful"),
+    ]
+    .into_iter()
+    .filter_map(|(score, label)| (score >= 0.6).then_some(label.to_string()))
+    .collect()
 }
 
 fn deterministic_index(
@@ -606,6 +756,7 @@ fn timestamp_for(namespace: &str, index: usize) -> Result<ModelTimestamp, ModelV
     let base_minutes = match namespace {
         "community" => 0,
         "user" => 10_000,
+        "persona" => 15_000,
         "membership" => 20_000,
         "post" => 30_000,
         "comment" => 40_000,
@@ -975,6 +1126,7 @@ output_format: postgres-sql
         let dataset = generate_forum_dataset(&small_forum_config()).expect("dataset should build");
 
         assert_eq!(dataset.users.len(), 4);
+        assert_eq!(dataset.personas.len(), dataset.users.len());
         assert_eq!(dataset.communities.len(), 2);
         assert_eq!(dataset.posts.len(), 5);
         assert_eq!(dataset.comments.len(), 7);
@@ -983,6 +1135,7 @@ output_format: postgres-sql
             dataset.activity_events.len(),
             dataset.communities.len()
                 + dataset.users.len()
+                + dataset.personas.len()
                 + dataset.relationships.len()
                 + dataset.posts.len()
                 + dataset.comments.len()
@@ -1016,6 +1169,10 @@ output_format: postgres-sql
         let dataset = generate_forum_dataset(&small_forum_config()).expect("dataset should build");
 
         assert_eq!(dataset.users[0].id.as_str(), "user-000001");
+        assert_eq!(
+            dataset.users[0].persona_id.as_ref().map(PersonaId::as_str),
+            Some("persona-000001")
+        );
         assert_eq!(dataset.users[0].username, "harper.gray0001");
         assert_eq!(dataset.users[0].display_name, "Harper Gray");
         assert_eq!(dataset.users[0].created_at.as_str(), "2026-01-07T22:40:00Z");
@@ -1047,6 +1204,14 @@ output_format: postgres-sql
             dataset.comments[0].body,
             "I would document the tradeoff before changing it."
         );
+        assert_eq!(dataset.personas[0].id.as_str(), "persona-000001");
+        assert_eq!(dataset.personas[0].user_id, dataset.users[0].id);
+        assert!((0.0..=1.0).contains(&dataset.personas[0].technical_depth));
+        assert!(dataset.activity_events.iter().any(|event| {
+            event.actor_id.as_ref() == Some(&dataset.users[0].id)
+                && event.kind == ActivityEventKind::PersonaCreated
+                && event.object == ActivityObject::Persona(dataset.personas[0].id.clone())
+        }));
     }
 
     #[test]

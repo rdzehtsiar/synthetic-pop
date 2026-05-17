@@ -2,8 +2,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::fmt;
 use synthetic_pop_core::{
-    ActivityEvent, ActivityObject, Comment, Community, Post, Relationship, RelationshipEndpoint,
-    User,
+    ActivityEvent, ActivityObject, Comment, Community, Persona, Post, Relationship,
+    RelationshipEndpoint, User,
 };
 use synthetic_pop_scenarios::ForumDataset;
 
@@ -71,6 +71,7 @@ fn export_jsonl(dataset: &ForumDataset) -> Result<String, ExportError> {
     let mut lines = Vec::new();
 
     push_jsonl_records(&mut lines, "user", &dataset.users)?;
+    push_jsonl_records(&mut lines, "persona", &dataset.personas)?;
     push_jsonl_records(&mut lines, "community", &dataset.communities)?;
     push_jsonl_records(&mut lines, "post", &dataset.posts)?;
     push_jsonl_records(&mut lines, "comment", &dataset.comments)?;
@@ -116,6 +117,31 @@ fn export_csv(dataset: &ForumDataset) -> Result<String, ExportError> {
             "created_at",
         ],
         dataset.users.iter().map(user_csv_row),
+    )?;
+    push_csv_section(
+        &mut output,
+        "personas",
+        &[
+            "id",
+            "user_id",
+            "summary",
+            "traits",
+            "openness",
+            "extroversion",
+            "conscientiousness",
+            "agreeableness",
+            "neuroticism",
+            "posting_frequency",
+            "controversy_affinity",
+            "humor_affinity",
+            "technical_depth",
+            "meme_affinity",
+            "verbosity",
+            "sleep_phase",
+            "activity_pattern",
+            "created_at",
+        ],
+        dataset.personas.iter().map(persona_csv_row),
     )?;
     push_csv_section(
         &mut output,
@@ -245,6 +271,29 @@ fn user_csv_row(user: &User) -> Result<Vec<String>, ExportError> {
     ])
 }
 
+fn persona_csv_row(persona: &Persona) -> Result<Vec<String>, ExportError> {
+    Ok(vec![
+        persona.id.to_string(),
+        persona.user_id.to_string(),
+        persona.summary.clone(),
+        json_string(&persona.traits)?,
+        score_string(persona.openness),
+        score_string(persona.extroversion),
+        score_string(persona.conscientiousness),
+        score_string(persona.agreeableness),
+        score_string(persona.neuroticism),
+        score_string(persona.posting_frequency),
+        score_string(persona.controversy_affinity),
+        score_string(persona.humor_affinity),
+        score_string(persona.technical_depth),
+        score_string(persona.meme_affinity),
+        json_scalar(&persona.verbosity)?,
+        json_scalar(&persona.sleep_phase)?,
+        json_scalar(&persona.activity_pattern)?,
+        persona.created_at.to_string(),
+    ])
+}
+
 fn community_csv_row(community: &Community) -> Result<Vec<String>, ExportError> {
     Ok(vec![
         community.id.to_string(),
@@ -355,6 +404,9 @@ fn push_sqlite_tables(output: &mut String) {
         "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT NOT NULL, locale TEXT NOT NULL, bio TEXT, status TEXT, profile_id TEXT, persona_id TEXT, interest_ids TEXT NOT NULL, community_ids TEXT NOT NULL, organization_ids TEXT NOT NULL, created_at TEXT NOT NULL);\n",
     );
     output.push_str(
+        "CREATE TABLE IF NOT EXISTS personas (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, summary TEXT NOT NULL, traits TEXT NOT NULL, openness REAL NOT NULL, extroversion REAL NOT NULL, conscientiousness REAL NOT NULL, agreeableness REAL NOT NULL, neuroticism REAL NOT NULL, posting_frequency REAL NOT NULL, controversy_affinity REAL NOT NULL, humor_affinity REAL NOT NULL, technical_depth REAL NOT NULL, meme_affinity REAL NOT NULL, verbosity TEXT NOT NULL, sleep_phase TEXT NOT NULL, activity_pattern TEXT NOT NULL, created_at TEXT NOT NULL);\n",
+    );
+    output.push_str(
         "CREATE TABLE IF NOT EXISTS communities (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, owner_id TEXT, organization_id TEXT, created_at TEXT NOT NULL);\n",
     );
     output.push_str(
@@ -374,6 +426,9 @@ fn push_sqlite_tables(output: &mut String) {
 fn push_postgres_tables(output: &mut String) {
     output.push_str(
         "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT NOT NULL, locale TEXT NOT NULL, bio TEXT, status TEXT, profile_id TEXT, persona_id TEXT, interest_ids JSONB NOT NULL, community_ids JSONB NOT NULL, organization_ids JSONB NOT NULL, created_at TEXT NOT NULL);\n",
+    );
+    output.push_str(
+        "CREATE TABLE IF NOT EXISTS personas (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, summary TEXT NOT NULL, traits JSONB NOT NULL, openness REAL NOT NULL, extroversion REAL NOT NULL, conscientiousness REAL NOT NULL, agreeableness REAL NOT NULL, neuroticism REAL NOT NULL, posting_frequency REAL NOT NULL, controversy_affinity REAL NOT NULL, humor_affinity REAL NOT NULL, technical_depth REAL NOT NULL, meme_affinity REAL NOT NULL, verbosity TEXT NOT NULL, sleep_phase TEXT NOT NULL, activity_pattern TEXT NOT NULL, created_at TEXT NOT NULL);\n",
     );
     output.push_str(
         "CREATE TABLE IF NOT EXISTS communities (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, owner_id TEXT, organization_id TEXT, created_at TEXT NOT NULL);\n",
@@ -434,6 +489,54 @@ fn push_sql_rows(
                 SqlValue::json(&user.community_ids)?,
                 SqlValue::json(&user.organization_ids)?,
                 SqlValue::text(user.created_at.to_string()),
+            ],
+            dialect,
+        );
+    }
+
+    for persona in &dataset.personas {
+        push_insert(
+            output,
+            "personas",
+            &[
+                "id",
+                "user_id",
+                "summary",
+                "traits",
+                "openness",
+                "extroversion",
+                "conscientiousness",
+                "agreeableness",
+                "neuroticism",
+                "posting_frequency",
+                "controversy_affinity",
+                "humor_affinity",
+                "technical_depth",
+                "meme_affinity",
+                "verbosity",
+                "sleep_phase",
+                "activity_pattern",
+                "created_at",
+            ],
+            &[
+                SqlValue::text(persona.id.to_string()),
+                SqlValue::text(persona.user_id.to_string()),
+                SqlValue::text(&persona.summary),
+                SqlValue::json(&persona.traits)?,
+                SqlValue::number(persona.openness),
+                SqlValue::number(persona.extroversion),
+                SqlValue::number(persona.conscientiousness),
+                SqlValue::number(persona.agreeableness),
+                SqlValue::number(persona.neuroticism),
+                SqlValue::number(persona.posting_frequency),
+                SqlValue::number(persona.controversy_affinity),
+                SqlValue::number(persona.humor_affinity),
+                SqlValue::number(persona.technical_depth),
+                SqlValue::number(persona.meme_affinity),
+                SqlValue::text(json_scalar(&persona.verbosity)?),
+                SqlValue::text(json_scalar(&persona.sleep_phase)?),
+                SqlValue::text(json_scalar(&persona.activity_pattern)?),
+                SqlValue::text(persona.created_at.to_string()),
             ],
             dialect,
         );
@@ -575,6 +678,7 @@ enum SqlValue {
     Null,
     Text(String),
     Json(String),
+    Number(String),
 }
 
 impl SqlValue {
@@ -596,6 +700,10 @@ impl SqlValue {
 
     fn json<T: Serialize>(value: &T) -> Result<Self, ExportError> {
         Ok(Self::Json(serde_json::to_string(value)?))
+    }
+
+    fn number(value: f32) -> Self {
+        Self::Number(score_string(value))
     }
 }
 
@@ -629,6 +737,7 @@ fn sql_literal(value: &SqlValue, dialect: SqlDialect) -> String {
             format!("'{}'::jsonb", sql_escape(value))
         }
         SqlValue::Json(value) => format!("'{}'", sql_escape(value)),
+        SqlValue::Number(value) => value.clone(),
     }
 }
 
@@ -638,6 +747,7 @@ fn export_prisma_seed(dataset: &ForumDataset) -> Result<String, ExportError> {
     );
 
     push_prisma_create_many(&mut output, "user", users_json(dataset)?)?;
+    push_prisma_create_many(&mut output, "persona", personas_json(dataset)?)?;
     push_prisma_create_many(&mut output, "community", communities_json(dataset)?)?;
     push_prisma_create_many(&mut output, "post", posts_json(dataset)?)?;
     push_prisma_create_many(&mut output, "comment", comments_json(dataset)?)?;
@@ -683,6 +793,37 @@ fn users_json(dataset: &ForumDataset) -> Result<Value, ExportError> {
                     "communityIds": user.community_ids,
                     "organizationIds": user.organization_ids,
                     "createdAt": user.created_at,
+                })
+            })
+            .collect(),
+    ))
+}
+
+fn personas_json(dataset: &ForumDataset) -> Result<Value, ExportError> {
+    Ok(Value::Array(
+        dataset
+            .personas
+            .iter()
+            .map(|persona| {
+                json!({
+                    "id": persona.id,
+                    "userId": persona.user_id,
+                    "summary": persona.summary,
+                    "traits": persona.traits,
+                    "openness": persona.openness,
+                    "extroversion": persona.extroversion,
+                    "conscientiousness": persona.conscientiousness,
+                    "agreeableness": persona.agreeableness,
+                    "neuroticism": persona.neuroticism,
+                    "postingFrequency": persona.posting_frequency,
+                    "controversyAffinity": persona.controversy_affinity,
+                    "humorAffinity": persona.humor_affinity,
+                    "technicalDepth": persona.technical_depth,
+                    "memeAffinity": persona.meme_affinity,
+                    "verbosity": persona.verbosity,
+                    "sleepPhase": persona.sleep_phase,
+                    "activityPattern": persona.activity_pattern,
+                    "createdAt": persona.created_at,
                 })
             })
             .collect(),
@@ -805,6 +946,10 @@ fn json_scalar<T: Serialize>(value: &T) -> Result<String, ExportError> {
     }
 }
 
+fn score_string(value: f32) -> String {
+    format!("{value:.3}")
+}
+
 fn relationship_endpoint_parts(endpoint: &RelationshipEndpoint) -> (&'static str, String) {
     match endpoint {
         RelationshipEndpoint::User(id) => ("user", id.to_string()),
@@ -846,8 +991,9 @@ fn sql_escape(value: &str) -> String {
 mod tests {
     use super::*;
     use synthetic_pop_core::{
-        ActivityEventId, ActivityEventKind, CommentId, CommunityId, Locale, ModelTimestamp, PostId,
-        RelationshipId, RelationshipKind, UserId,
+        ActivityEventId, ActivityEventKind, ActivityPattern, CommentId, CommunityId, Locale,
+        ModelTimestamp, Persona, PersonaId, PostId, RelationshipId, RelationshipKind, SleepPhase,
+        UserId, Verbosity,
     };
 
     fn timestamp() -> ModelTimestamp {
@@ -858,6 +1004,7 @@ mod tests {
         let user_id = UserId::new("user-000001").expect("user ID should be valid");
         let community_id =
             CommunityId::new("community-000001").expect("community ID should be valid");
+        let persona_id = PersonaId::new("persona-000001").expect("persona ID should be valid");
         let post_id = PostId::new("post-000001").expect("post ID should be valid");
         let comment_id = CommentId::new("comment-000001").expect("comment ID should be valid");
         let relationship_id =
@@ -873,7 +1020,29 @@ mod tests {
         )
         .expect("user should be valid");
         user.bio = Some("Builder, writer\nmentor".to_string());
+        user.persona_id = Some(persona_id.clone());
         user.community_ids = vec![community_id.clone()];
+
+        let persona = Persona {
+            id: persona_id,
+            user_id: user_id.clone(),
+            summary: "balanced technical regular contributor".to_string(),
+            traits: vec!["technical".to_string(), "supportive".to_string()],
+            openness: 0.61,
+            extroversion: 0.42,
+            conscientiousness: 0.77,
+            agreeableness: 0.68,
+            neuroticism: 0.18,
+            posting_frequency: 0.53,
+            controversy_affinity: 0.09,
+            humor_affinity: 0.45,
+            technical_depth: 0.82,
+            meme_affinity: 0.23,
+            verbosity: Verbosity::Balanced,
+            sleep_phase: SleepPhase::Daytime,
+            activity_pattern: ActivityPattern::Regular,
+            created_at: occurred_at.clone(),
+        };
 
         let community = Community {
             id: community_id.clone(),
@@ -922,6 +1091,7 @@ mod tests {
 
         ForumDataset {
             users: vec![user],
+            personas: vec![persona],
             communities: vec![community],
             posts: vec![post],
             comments: vec![comment],
@@ -943,10 +1113,12 @@ mod tests {
         let jsonl = export_forum_dataset(&dataset, ExportFormat::Jsonl).expect("jsonl export");
 
         assert!(json.contains("\"users\""));
+        assert!(json.contains("\"personas\""));
         assert!(json.contains("\"activity_events\""));
         assert!(jsonl.contains("\"type\":\"user\""));
+        assert!(jsonl.contains("\"type\":\"persona\""));
         assert!(jsonl.contains("\"type\":\"activity_event\""));
-        assert_eq!(jsonl.lines().count(), 6);
+        assert_eq!(jsonl.lines().count(), 7);
     }
 
     #[test]
@@ -954,6 +1126,7 @@ mod tests {
         let csv = export_forum_dataset(&sample_dataset(), ExportFormat::Csv).expect("csv export");
 
         assert!(csv.contains("[users]\nid,username,display_name,locale,bio,status,profile_id,persona_id,interest_ids,community_ids,organization_ids,created_at\n"));
+        assert!(csv.contains("[personas]\nid,user_id,summary,traits,openness,extroversion,conscientiousness,agreeableness,neuroticism,posting_frequency,controversy_affinity,humor_affinity,technical_depth,meme_affinity,verbosity,sleep_phase,activity_pattern,created_at\n"));
         assert!(csv.contains(
             "[relationships]\nid,source_type,source_id,target_type,target_id,kind,created_at\n"
         ));
@@ -970,6 +1143,7 @@ mod tests {
 
         assert!(sqlite.starts_with("BEGIN TRANSACTION;\n"));
         assert!(sqlite.contains("INSERT INTO relationships"));
+        assert!(sqlite.contains("INSERT INTO personas"));
         assert!(sqlite.contains("INSERT INTO activity_events"));
         assert!(sqlite.contains("'Owner''s picks'"));
         assert!(postgres.contains("'[\"community-000001\"]'::jsonb"));
@@ -981,6 +1155,7 @@ mod tests {
             export_forum_dataset(&sample_dataset(), ExportFormat::PrismaSeed).expect("seed export");
 
         assert!(seed.contains("const prisma = new PrismaClient();"));
+        assert!(seed.contains("await prisma.persona.createMany"));
         assert!(seed.contains("await prisma.relationship.createMany"));
         assert!(seed.contains("await prisma.activityEvent.createMany"));
         assert!(seed.contains("Alex \\\"A\\\" Morgan"));

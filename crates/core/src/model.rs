@@ -145,6 +145,7 @@ pub enum ReactionKind {
 #[serde(rename_all = "snake_case")]
 pub enum ActivityEventKind {
     UserCreated,
+    PersonaCreated,
     ProfileUpdated,
     StatusChanged,
     PostCreated,
@@ -153,6 +154,33 @@ pub enum ActivityEventKind {
     RelationshipCreated,
     CommunityJoined,
     OrganizationJoined,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verbosity {
+    Terse,
+    Balanced,
+    Detailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SleepPhase {
+    EarlyBird,
+    Daytime,
+    NightOwl,
+    Irregular,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityPattern {
+    Lurker,
+    Casual,
+    Regular,
+    Bursty,
+    PowerUser,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,12 +281,25 @@ impl Username {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Persona {
     pub id: PersonaId,
     pub user_id: UserId,
     pub summary: String,
     pub traits: Vec<String>,
+    pub openness: f32,
+    pub extroversion: f32,
+    pub conscientiousness: f32,
+    pub agreeableness: f32,
+    pub neuroticism: f32,
+    pub posting_frequency: f32,
+    pub controversy_affinity: f32,
+    pub humor_affinity: f32,
+    pub technical_depth: f32,
+    pub meme_affinity: f32,
+    pub verbosity: Verbosity,
+    pub sleep_phase: SleepPhase,
+    pub activity_pattern: ActivityPattern,
     pub created_at: ModelTimestamp,
 }
 
@@ -274,6 +315,19 @@ impl Persona {
             user_id,
             summary: validate_required_field("Persona", "summary", summary.into())?,
             traits: Vec::new(),
+            openness: 0.5,
+            extroversion: 0.5,
+            conscientiousness: 0.5,
+            agreeableness: 0.5,
+            neuroticism: 0.5,
+            posting_frequency: 0.5,
+            controversy_affinity: 0.5,
+            humor_affinity: 0.5,
+            technical_depth: 0.5,
+            meme_affinity: 0.5,
+            verbosity: Verbosity::Balanced,
+            sleep_phase: SleepPhase::Daytime,
+            activity_pattern: ActivityPattern::Casual,
             created_at,
         })
     }
@@ -613,6 +667,9 @@ mod tests {
         let relationship = RelationshipKind::MemberOf;
         let reaction = ReactionKind::Bookmark;
         let activity = ActivityEventKind::RelationshipCreated;
+        let verbosity = Verbosity::Detailed;
+        let sleep_phase = SleepPhase::NightOwl;
+        let activity_pattern = ActivityPattern::PowerUser;
 
         assert_eq!(
             serde_json::to_string(&relationship).expect("relationship kind should serialize"),
@@ -626,6 +683,18 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&activity).expect("activity kind should serialize"),
             "\"relationship_created\""
+        );
+        assert_eq!(
+            serde_json::to_string(&verbosity).expect("verbosity should serialize"),
+            "\"detailed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&sleep_phase).expect("sleep phase should serialize"),
+            "\"night_owl\""
+        );
+        assert_eq!(
+            serde_json::to_string(&activity_pattern).expect("activity pattern should serialize"),
+            "\"power_user\""
         );
     }
 
@@ -960,6 +1029,19 @@ mod tests {
             user_id: user_id.clone(),
             summary: "Practical community builder".to_string(),
             traits: vec!["helpful".to_string(), "curious".to_string()],
+            openness: 0.61,
+            extroversion: 0.44,
+            conscientiousness: 0.78,
+            agreeableness: 0.73,
+            neuroticism: 0.22,
+            posting_frequency: 0.56,
+            controversy_affinity: 0.12,
+            humor_affinity: 0.49,
+            technical_depth: 0.81,
+            meme_affinity: 0.31,
+            verbosity: Verbosity::Balanced,
+            sleep_phase: SleepPhase::Daytime,
+            activity_pattern: ActivityPattern::Regular,
             created_at: timestamp.clone(),
         };
         let interest = Interest {
