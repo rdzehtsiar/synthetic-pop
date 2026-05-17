@@ -169,6 +169,7 @@ pub fn generate_forum_dataset(
         &community_members,
         &mut activity_events,
     )?;
+    sort_activity_events(&mut activity_events);
 
     Ok(ForumDataset {
         users,
@@ -181,6 +182,73 @@ pub fn generate_forum_dataset(
         activity_events,
     })
 }
+
+pub fn validate_forum_temporal_consistency(
+    dataset: &ForumDataset,
+) -> Result<(), TemporalConsistencyError> {
+    let mut errors = Vec::new();
+    let user_created_at = dataset
+        .users
+        .iter()
+        .map(|user| (user.id.clone(), minutes_from_timestamp(&user.created_at)))
+        .collect::<HashMap<_, _>>();
+    let post_by_id = dataset
+        .posts
+        .iter()
+        .map(|post| (post.id.clone(), post))
+        .collect::<HashMap<_, _>>();
+    let comment_by_id = dataset
+        .comments
+        .iter()
+        .map(|comment| (comment.id.clone(), comment))
+        .collect::<HashMap<_, _>>();
+    let relationship_by_id = dataset
+        .relationships
+        .iter()
+        .map(|relationship| (relationship.id.clone(), relationship))
+        .collect::<HashMap<_, _>>();
+
+    validate_stable_timestamp_values(dataset, &mut errors);
+    validate_posts_after_authors(dataset, &user_created_at, &mut errors);
+    validate_comments_after_posts(dataset, &user_created_at, &post_by_id, &mut errors);
+    validate_relationships_after_users(dataset, &user_created_at, &mut errors);
+    validate_activity_events(
+        dataset,
+        &user_created_at,
+        &post_by_id,
+        &comment_by_id,
+        &relationship_by_id,
+        &mut errors,
+    );
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(TemporalConsistencyError {
+            message: errors.join("; "),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemporalConsistencyError {
+    message: String,
+}
+
+impl TemporalConsistencyError {
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for TemporalConsistencyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for TemporalConsistencyError {}
 
 #[derive(Debug)]
 pub enum ForumGenerationError {
@@ -1497,6 +1565,302 @@ fn push_activity(
     Ok(())
 }
 
+fn sort_activity_events(activity_events: &mut [ActivityEvent]) {
+    activity_events.sort_by(|left, right| {
+        left.occurred_at
+            .as_str()
+            .cmp(right.occurred_at.as_str())
+            .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+    });
+}
+
+fn validate_stable_timestamp_values(dataset: &ForumDataset, errors: &mut Vec<String>) {
+    for user in &dataset.users {
+        require_stable_timestamp("user", user.id.as_str(), &user.created_at, errors);
+    }
+    for persona in &dataset.personas {
+        require_stable_timestamp("persona", persona.id.as_str(), &persona.created_at, errors);
+    }
+    for community in &dataset.communities {
+        require_stable_timestamp(
+            "community",
+            community.id.as_str(),
+            &community.created_at,
+            errors,
+        );
+    }
+    for post in &dataset.posts {
+        require_stable_timestamp("post", post.id.as_str(), &post.created_at, errors);
+    }
+    for comment in &dataset.comments {
+        require_stable_timestamp("comment", comment.id.as_str(), &comment.created_at, errors);
+    }
+    for relationship in &dataset.relationships {
+        require_stable_timestamp(
+            "relationship",
+            relationship.id.as_str(),
+            &relationship.created_at,
+            errors,
+        );
+    }
+    for event in &dataset.activity_events {
+        require_stable_timestamp("activity", event.id.as_str(), &event.occurred_at, errors);
+    }
+}
+
+fn validate_posts_after_authors(
+    dataset: &ForumDataset,
+    user_created_at: &HashMap<UserId, usize>,
+    errors: &mut Vec<String>,
+) {
+    for post in &dataset.posts {
+        require_after_user(
+            "post",
+            post.id.as_str(),
+            &post.author_id,
+            minutes_from_timestamp(&post.created_at),
+            user_created_at,
+            errors,
+        );
+    }
+}
+
+fn validate_comments_after_posts(
+    dataset: &ForumDataset,
+    user_created_at: &HashMap<UserId, usize>,
+    post_by_id: &HashMap<PostId, &Post>,
+    errors: &mut Vec<String>,
+) {
+    for comment in &dataset.comments {
+        let comment_minutes = minutes_from_timestamp(&comment.created_at);
+        require_after_user(
+            "comment",
+            comment.id.as_str(),
+            &comment.author_id,
+            comment_minutes,
+            user_created_at,
+            errors,
+        );
+        match post_by_id.get(&comment.post_id) {
+            Some(post) if comment_minutes > minutes_from_timestamp(&post.created_at) => {}
+            Some(post) => errors.push(format!(
+                "comment {} occurs at or before post {}",
+                comment.id, post.id
+            )),
+            None => errors.push(format!("comment {} references missing post", comment.id)),
+        }
+    }
+}
+
+fn validate_relationships_after_users(
+    dataset: &ForumDataset,
+    user_created_at: &HashMap<UserId, usize>,
+    errors: &mut Vec<String>,
+) {
+    for relationship in &dataset.relationships {
+        let relationship_minutes = minutes_from_timestamp(&relationship.created_at);
+        require_relationship_endpoint_after_user(
+            relationship.id.as_str(),
+            &relationship.source,
+            relationship_minutes,
+            user_created_at,
+            errors,
+        );
+        require_relationship_endpoint_after_user(
+            relationship.id.as_str(),
+            &relationship.target,
+            relationship_minutes,
+            user_created_at,
+            errors,
+        );
+    }
+}
+
+fn validate_activity_events(
+    dataset: &ForumDataset,
+    user_created_at: &HashMap<UserId, usize>,
+    post_by_id: &HashMap<PostId, &Post>,
+    comment_by_id: &HashMap<CommentId, &Comment>,
+    relationship_by_id: &HashMap<RelationshipId, &Relationship>,
+    errors: &mut Vec<String>,
+) {
+    let mut previous = None;
+
+    for event in &dataset.activity_events {
+        let event_minutes = minutes_from_timestamp(&event.occurred_at);
+        if let Some(previous_minutes) = previous {
+            if event_minutes < previous_minutes {
+                errors.push(format!("activity event {} is out of order", event.id));
+            }
+        }
+        previous = Some(event_minutes);
+
+        if let Some(actor_id) = &event.actor_id {
+            require_after_user(
+                "activity",
+                event.id.as_str(),
+                actor_id,
+                event_minutes,
+                user_created_at,
+                errors,
+            );
+        }
+
+        validate_activity_object_time(
+            event,
+            event_minutes,
+            post_by_id,
+            comment_by_id,
+            relationship_by_id,
+            errors,
+        );
+    }
+}
+
+fn validate_activity_object_time(
+    event: &ActivityEvent,
+    event_minutes: usize,
+    post_by_id: &HashMap<PostId, &Post>,
+    comment_by_id: &HashMap<CommentId, &Comment>,
+    relationship_by_id: &HashMap<RelationshipId, &Relationship>,
+    errors: &mut Vec<String>,
+) {
+    match &event.object {
+        ActivityObject::Post(post_id) if event.kind == ActivityEventKind::PostCreated => {
+            require_activity_matches(
+                event,
+                event_minutes,
+                post_by_id.get(post_id),
+                "post",
+                errors,
+            );
+        }
+        ActivityObject::Comment(comment_id) if event.kind == ActivityEventKind::CommentCreated => {
+            require_activity_matches(
+                event,
+                event_minutes,
+                comment_by_id.get(comment_id),
+                "comment",
+                errors,
+            );
+        }
+        ActivityObject::Relationship(relationship_id)
+            if event.kind == ActivityEventKind::RelationshipCreated =>
+        {
+            require_activity_matches(
+                event,
+                event_minutes,
+                relationship_by_id.get(relationship_id),
+                "relationship",
+                errors,
+            );
+        }
+        _ => {}
+    }
+}
+
+trait CreatedAt {
+    fn created_at(&self) -> &ModelTimestamp;
+    fn id_text(&self) -> String;
+}
+
+impl CreatedAt for Post {
+    fn created_at(&self) -> &ModelTimestamp {
+        &self.created_at
+    }
+
+    fn id_text(&self) -> String {
+        self.id.to_string()
+    }
+}
+
+impl CreatedAt for Comment {
+    fn created_at(&self) -> &ModelTimestamp {
+        &self.created_at
+    }
+
+    fn id_text(&self) -> String {
+        self.id.to_string()
+    }
+}
+
+impl CreatedAt for Relationship {
+    fn created_at(&self) -> &ModelTimestamp {
+        &self.created_at
+    }
+
+    fn id_text(&self) -> String {
+        self.id.to_string()
+    }
+}
+
+fn require_activity_matches<T: CreatedAt>(
+    event: &ActivityEvent,
+    event_minutes: usize,
+    record: Option<&&T>,
+    entity: &str,
+    errors: &mut Vec<String>,
+) {
+    match record {
+        Some(record) if event_minutes == minutes_from_timestamp(record.created_at()) => {}
+        Some(record) => errors.push(format!(
+            "{entity} activity {} does not match {entity} {} timestamp",
+            event.id,
+            record.id_text()
+        )),
+        None => errors.push(format!(
+            "{} activity {} references missing record",
+            entity, event.id
+        )),
+    }
+}
+
+fn require_stable_timestamp(
+    entity: &str,
+    id: &str,
+    timestamp: &ModelTimestamp,
+    errors: &mut Vec<String>,
+) {
+    match parse_timestamp_minutes(timestamp.as_str()) {
+        Some(minutes) if timestamp.as_str() == timestamp_from_minutes(minutes) => {}
+        _ => errors.push(format!("{entity} {id} has unstable timestamp {timestamp}")),
+    }
+}
+
+fn require_after_user(
+    entity: &str,
+    id: &str,
+    user_id: &UserId,
+    occurred_at: usize,
+    user_created_at: &HashMap<UserId, usize>,
+    errors: &mut Vec<String>,
+) {
+    match user_created_at.get(user_id) {
+        Some(created_at) if occurred_at >= *created_at => {}
+        Some(_) => errors.push(format!("{entity} {id} occurs before user {user_id} exists")),
+        None => errors.push(format!("{entity} {id} references missing user {user_id}")),
+    }
+}
+
+fn require_relationship_endpoint_after_user(
+    relationship_id: &str,
+    endpoint: &RelationshipEndpoint,
+    occurred_at: usize,
+    user_created_at: &HashMap<UserId, usize>,
+    errors: &mut Vec<String>,
+) {
+    if let RelationshipEndpoint::User(user_id) = endpoint {
+        require_after_user(
+            "relationship",
+            relationship_id,
+            user_id,
+            occurred_at,
+            user_created_at,
+            errors,
+        );
+    }
+}
+
 fn user_id(index: usize) -> Result<UserId, ModelValidationError> {
     UserId::new(format!("user-{:06}", index + 1))
 }
@@ -2058,6 +2422,15 @@ fn minutes_from_timestamp(timestamp: &ModelTimestamp) -> usize {
 
 fn parse_timestamp_minutes(value: &str) -> Option<usize> {
     if value.len() != 20 || !value.ends_with('Z') {
+        return None;
+    }
+    if value.get(4..5)? != "-"
+        || value.get(7..8)? != "-"
+        || value.get(10..11)? != "T"
+        || value.get(13..14)? != ":"
+        || value.get(16..17)? != ":"
+        || value.get(17..19)? != "00"
+    {
         return None;
     }
 
@@ -2691,6 +3064,44 @@ output_format: postgres-sql
         let dormant_average = authored_average_for_status(&first, &post_counts, "dormant");
 
         assert!(active_average > dormant_average * 2.0);
+    }
+
+    #[test]
+    fn generated_timestamps_are_causally_ordered() {
+        let dataset = generate_forum_dataset(&forum_config_with("temporal-causal", 200, 500, 800))
+            .expect("dataset should build");
+
+        validate_forum_temporal_consistency(&dataset).expect("timestamps should be consistent");
+    }
+
+    #[test]
+    fn activity_events_are_chronologically_ordered() {
+        let dataset =
+            generate_forum_dataset(&forum_config_with("temporal-activity-order", 120, 300, 300))
+                .expect("dataset should build");
+        let mut previous = None;
+
+        for event in &dataset.activity_events {
+            let minutes = parse_timestamp_minutes(event.occurred_at.as_str())
+                .expect("activity timestamp should parse");
+            if let Some(previous_minutes) = previous {
+                assert!(minutes >= previous_minutes);
+            }
+            previous = Some(minutes);
+        }
+    }
+
+    #[test]
+    fn generated_timestamps_are_stable_iso_utc_values() {
+        let dataset =
+            generate_forum_dataset(&forum_config_with("temporal-stable-iso", 80, 120, 120))
+                .expect("dataset should build");
+
+        for timestamp in all_generated_timestamps(&dataset) {
+            let minutes =
+                parse_timestamp_minutes(timestamp.as_str()).expect("timestamp should parse");
+            assert_eq!(timestamp.as_str(), timestamp_from_minutes(minutes));
+        }
     }
 
     #[test]
@@ -3405,6 +3816,35 @@ output_format: postgres-sql
 
         assert!(!users.is_empty(), "expected generated {status} users");
         posts as f32 / users.len() as f32
+    }
+
+    fn all_generated_timestamps(dataset: &ForumDataset) -> Vec<&ModelTimestamp> {
+        dataset
+            .users
+            .iter()
+            .map(|user| &user.created_at)
+            .chain(dataset.personas.iter().map(|persona| &persona.created_at))
+            .chain(
+                dataset
+                    .communities
+                    .iter()
+                    .map(|community| &community.created_at),
+            )
+            .chain(dataset.posts.iter().map(|post| &post.created_at))
+            .chain(dataset.comments.iter().map(|comment| &comment.created_at))
+            .chain(
+                dataset
+                    .relationships
+                    .iter()
+                    .map(|relationship| &relationship.created_at),
+            )
+            .chain(
+                dataset
+                    .activity_events
+                    .iter()
+                    .map(|event| &event.occurred_at),
+            )
+            .collect()
     }
 
     fn timestamp_hour(timestamp: &ModelTimestamp) -> usize {
