@@ -1088,7 +1088,8 @@ fn generate_posts(
                 id.as_str(),
             );
             let topic = choose(config, "posts", id.as_str(), "topic", &POST_TOPICS);
-            let timestamp = timestamp_for("post", index)?;
+            let persona = persona_for_user(personas, &author.id);
+            let timestamp = scheduled_post_timestamp(config, index, id.as_str(), author, persona)?;
             let mut post = Post::new(
                 id.clone(),
                 author.id.clone(),
@@ -1143,7 +1144,9 @@ fn generate_comments(
                 id.as_str(),
             );
             let body = choose(config, "comments", id.as_str(), "body", &COMMENT_TONES);
-            let timestamp = timestamp_for("comment", index)?;
+            let persona = persona_for_user(personas, &author.id);
+            let timestamp =
+                scheduled_comment_timestamp(config, index, id.as_str(), post, author, persona)?;
             let comment = Comment::new(
                 id.clone(),
                 post.id.clone(),
@@ -1268,6 +1271,13 @@ fn author_tie_breaker(
         .expect("non-zero author tie-breaker bound should produce a value");
 
     (value as f32) / 1_000_000.0
+}
+
+fn persona_for_user<'a>(personas: &'a [Persona], user_id: &UserId) -> &'a Persona {
+    personas
+        .iter()
+        .find(|persona| &persona.user_id == user_id)
+        .expect("generated users should have matching personas")
 }
 
 fn affinity_score(
@@ -1660,9 +1670,303 @@ fn timestamp_for(namespace: &str, index: usize) -> Result<ModelTimestamp, ModelV
     ModelTimestamp::new(timestamp_from_minutes(base_minutes + index * 7))
 }
 
+const MINUTES_PER_DAY: usize = 1_440;
+const CONTENT_START_MINUTES: usize = 30_000;
+
+fn scheduled_post_timestamp(
+    config: &ForumScenarioConfig,
+    index: usize,
+    entity_id: &str,
+    author: &User,
+    persona: &Persona,
+) -> Result<ModelTimestamp, ModelValidationError> {
+    ModelTimestamp::new(timestamp_from_minutes(scheduled_activity_minutes(
+        config, "posts", index, entity_id, author, persona,
+    )))
+}
+
+fn scheduled_comment_timestamp(
+    config: &ForumScenarioConfig,
+    index: usize,
+    entity_id: &str,
+    post: &Post,
+    author: &User,
+    persona: &Persona,
+) -> Result<ModelTimestamp, ModelValidationError> {
+    let candidate =
+        scheduled_activity_minutes(config, "comments", index, entity_id, author, persona);
+    let reply_delay = comment_reply_delay_minutes(config, entity_id, persona);
+    let minimum = minutes_from_timestamp(&post.created_at) + reply_delay;
+    let minutes = if candidate >= minimum {
+        candidate
+    } else {
+        let days_needed = (minimum - candidate) / MINUTES_PER_DAY + 1;
+        candidate + days_needed * MINUTES_PER_DAY
+    };
+
+    ModelTimestamp::new(timestamp_from_minutes(minutes))
+}
+
+fn scheduled_activity_minutes(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    index: usize,
+    entity_id: &str,
+    author: &User,
+    persona: &Persona,
+) -> usize {
+    let day = scheduled_activity_day(config, namespace, index, entity_id, author, persona);
+    let local_hour = scheduled_local_hour(config, namespace, entity_id, day, author, persona);
+    let local_minute = scheduled_local_minute(config, namespace, entity_id, persona);
+    let timezone_offset = timezone_offset_hours(config, author);
+    let utc_hour = (local_hour + 24 - timezone_offset).rem_euclid(24);
+
+    CONTENT_START_MINUTES + day * MINUTES_PER_DAY + utc_hour as usize * 60 + local_minute
+}
+
+fn scheduled_activity_day(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    index: usize,
+    entity_id: &str,
+    author: &User,
+    persona: &Persona,
+) -> usize {
+    let cluster_size = activity_cluster_size(persona.activity_pattern);
+    let cadence = activity_cadence_days(persona.activity_pattern);
+    let cluster = index / cluster_size;
+    let anchor = deterministic_index(
+        config,
+        "temporal",
+        author.id.as_str(),
+        "activity_day_anchor",
+        14,
+    );
+    let cluster_day = deterministic_index(config, namespace, entity_id, "activity_day", cadence);
+    let burst_day = deterministic_index(config, namespace, entity_id, "burst_day", 3);
+
+    anchor
+        + cluster * cadence
+        + if matches!(
+            persona.activity_pattern,
+            ActivityPattern::Bursty | ActivityPattern::PowerUser
+        ) {
+            burst_day
+        } else {
+            cluster_day
+        }
+}
+
+fn scheduled_local_hour(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    day: usize,
+    author: &User,
+    persona: &Persona,
+) -> i32 {
+    let (start, width) = active_hour_window(persona);
+    let mut hour = start
+        + i32::try_from(deterministic_index(
+            config,
+            namespace,
+            entity_id,
+            "active_hour",
+            width,
+        ))
+        .expect("active hour should fit in i32");
+
+    if is_weekend(day) {
+        hour += weekend_hour_shift(persona.activity_pattern);
+    }
+
+    if matches!(
+        persona.activity_pattern,
+        ActivityPattern::Bursty | ActivityPattern::PowerUser
+    ) {
+        let anchor = burst_anchor_hour(config, author, persona);
+        let offset = i32::try_from(deterministic_index(
+            config,
+            namespace,
+            entity_id,
+            "burst_hour_offset",
+            3,
+        ))
+        .expect("burst hour offset should fit in i32")
+            - 1;
+        hour = (hour + anchor + offset) / 2;
+    }
+
+    hour.rem_euclid(24)
+}
+
+fn scheduled_local_minute(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    persona: &Persona,
+) -> usize {
+    let minute = deterministic_index(config, namespace, entity_id, "active_minute", 60);
+
+    if persona.activity_pattern == ActivityPattern::Bursty {
+        (minute / 15) * 15
+    } else {
+        minute
+    }
+}
+
+fn active_hour_window(persona: &Persona) -> (i32, usize) {
+    match (persona.sleep_phase, persona.activity_pattern) {
+        (SleepPhase::EarlyBird, ActivityPattern::PowerUser) => (6, 5),
+        (SleepPhase::EarlyBird, _) => (7, 4),
+        (SleepPhase::Daytime, ActivityPattern::PowerUser) => (10, 8),
+        (SleepPhase::Daytime, _) => (12, 7),
+        (SleepPhase::NightOwl, ActivityPattern::PowerUser) => (18, 6),
+        (SleepPhase::NightOwl, _) => (19, 5),
+        (SleepPhase::Irregular, ActivityPattern::Bursty) => (16, 8),
+        (SleepPhase::Irregular, _) => (8, 14),
+    }
+}
+
+fn burst_anchor_hour(config: &ForumScenarioConfig, author: &User, persona: &Persona) -> i32 {
+    let base = match persona.sleep_phase {
+        SleepPhase::EarlyBird => 8,
+        SleepPhase::Daytime => 15,
+        SleepPhase::NightOwl => 21,
+        SleepPhase::Irregular => 18,
+    };
+    let jitter = deterministic_index(
+        config,
+        "temporal",
+        author.id.as_str(),
+        "burst_anchor_hour",
+        5,
+    ) as i32
+        - 2;
+
+    base + jitter
+}
+
+fn timezone_offset_hours(config: &ForumScenarioConfig, user: &User) -> i32 {
+    let base = match user.locale.as_str() {
+        "en-GB" => 0,
+        "en-AU" => 10,
+        "en-NZ" => 12,
+        "en-CA" | "en-US" => -5,
+        _ => 0,
+    };
+    let jitter =
+        deterministic_index(config, "temporal", user.id.as_str(), "timezone_jitter", 3) as i32 - 1;
+
+    (base + jitter).clamp(-11, 13)
+}
+
+fn is_weekend(day: usize) -> bool {
+    matches!((3 + day) % 7, 5 | 6)
+}
+
+fn weekend_hour_shift(pattern: ActivityPattern) -> i32 {
+    match pattern {
+        ActivityPattern::Lurker => 1,
+        ActivityPattern::Casual | ActivityPattern::Bursty => 2,
+        ActivityPattern::Regular => 1,
+        ActivityPattern::PowerUser => 0,
+    }
+}
+
+fn activity_cluster_size(pattern: ActivityPattern) -> usize {
+    match pattern {
+        ActivityPattern::Lurker => 1,
+        ActivityPattern::Casual => 2,
+        ActivityPattern::Regular => 3,
+        ActivityPattern::Bursty => 6,
+        ActivityPattern::PowerUser => 4,
+    }
+}
+
+fn activity_cadence_days(pattern: ActivityPattern) -> usize {
+    match pattern {
+        ActivityPattern::Lurker => 21,
+        ActivityPattern::Casual => 10,
+        ActivityPattern::Regular => 5,
+        ActivityPattern::Bursty => 12,
+        ActivityPattern::PowerUser => 2,
+    }
+}
+
+fn comment_reply_delay_minutes(
+    config: &ForumScenarioConfig,
+    entity_id: &str,
+    persona: &Persona,
+) -> usize {
+    let upper_bound = match persona.activity_pattern {
+        ActivityPattern::Lurker => 3 * MINUTES_PER_DAY,
+        ActivityPattern::Casual => MINUTES_PER_DAY,
+        ActivityPattern::Regular => 12 * 60,
+        ActivityPattern::Bursty => 6 * 60,
+        ActivityPattern::PowerUser => 2 * 60,
+    };
+
+    15 + deterministic_index(config, "comments", entity_id, "reply_delay", upper_bound)
+}
+
+fn minutes_from_timestamp(timestamp: &ModelTimestamp) -> usize {
+    parse_timestamp_minutes(timestamp.as_str()).expect("generated timestamps should be parseable")
+}
+
+fn parse_timestamp_minutes(value: &str) -> Option<usize> {
+    if value.len() != 20 || !value.ends_with('Z') {
+        return None;
+    }
+
+    let year = value.get(0..4)?.parse::<usize>().ok()?;
+    let month = value.get(5..7)?.parse::<usize>().ok()?;
+    let day = value.get(8..10)?.parse::<usize>().ok()?;
+    let hour = value.get(11..13)?.parse::<usize>().ok()?;
+    let minute = value.get(14..16)?.parse::<usize>().ok()?;
+
+    Some(days_after_2026_01_01(year, month, day)? * MINUTES_PER_DAY + hour * 60 + minute)
+}
+
+fn days_after_2026_01_01(year: usize, month: usize, day: usize) -> Option<usize> {
+    if year < 2026 || !(1..=12).contains(&month) || day == 0 {
+        return None;
+    }
+
+    let mut days = 0;
+    for candidate_year in 2026..year {
+        days += if is_leap_year(candidate_year) {
+            366
+        } else {
+            365
+        };
+    }
+
+    let month_lengths = [
+        31,
+        if is_leap_year(year) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if day > month_lengths[month - 1] {
+        return None;
+    }
+
+    days += month_lengths.iter().take(month - 1).sum::<usize>();
+    Some(days + day - 1)
+}
+
 fn timestamp_from_minutes(minutes: usize) -> String {
-    let days = minutes / 1_440;
-    let minute_of_day = minutes % 1_440;
+    let days = minutes / MINUTES_PER_DAY;
+    let minute_of_day = minutes % MINUTES_PER_DAY;
     let hour = minute_of_day / 60;
     let minute = minute_of_day % 60;
     let (year, month, day) = ymd_after_2026_01_01(days);
@@ -2066,6 +2370,68 @@ output_format: postgres-sql
         let second = generate_forum_dataset(&second_config).expect("second dataset should build");
 
         assert_ne!(first.users[0].display_name, second.users[0].display_name);
+    }
+
+    #[test]
+    fn activity_schedule_hourly_distribution_is_not_uniform() {
+        let dataset =
+            generate_forum_dataset(&forum_config_with("activity-hour-histogram", 400, 2_000, 1))
+                .expect("dataset should build");
+        let mut hourly_counts = [0usize; 24];
+
+        for post in &dataset.posts {
+            hourly_counts[timestamp_hour(&post.created_at)] += 1;
+        }
+
+        let max = hourly_counts.iter().copied().max().unwrap_or_default();
+        let min = hourly_counts.iter().copied().min().unwrap_or_default();
+
+        assert!(max > min * 2);
+        assert!(hourly_counts.iter().filter(|&&count| count > 0).count() >= 12);
+    }
+
+    #[test]
+    fn activity_schedule_is_deterministic() {
+        let config = forum_config_with("activity-deterministic", 200, 400, 200);
+        let first = generate_forum_dataset(&config).expect("first dataset should build");
+        let second = generate_forum_dataset(&config).expect("second dataset should build");
+
+        let first_post_times = first
+            .posts
+            .iter()
+            .map(|post| post.created_at.clone())
+            .collect::<Vec<_>>();
+        let second_post_times = second
+            .posts
+            .iter()
+            .map(|post| post.created_at.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(first_post_times, second_post_times);
+    }
+
+    #[test]
+    fn activity_schedule_varies_by_persona_pattern() {
+        let config = forum_config_with("activity-persona-variation", 1, 1, 1);
+        let user = test_user("user-temporal", "en-US", &[]);
+        let mut early = affinity_persona("persona-early", SleepPhase::EarlyBird, 0.70, 0.1, 0.8);
+        early.user_id = user.id.clone();
+        early.activity_pattern = ActivityPattern::Regular;
+        let mut night = affinity_persona("persona-night", SleepPhase::NightOwl, 0.70, 0.1, 0.8);
+        night.user_id = user.id.clone();
+        night.activity_pattern = ActivityPattern::Regular;
+        let mut bursty = early.clone();
+        bursty.activity_pattern = ActivityPattern::Bursty;
+
+        let early_time =
+            scheduled_post_timestamp(&config, 12, "post-temporal", &user, &early).unwrap();
+        let night_time =
+            scheduled_post_timestamp(&config, 12, "post-temporal", &user, &night).unwrap();
+        let bursty_time =
+            scheduled_post_timestamp(&config, 12, "post-temporal", &user, &bursty).unwrap();
+
+        assert_ne!(timestamp_hour(&early_time), timestamp_hour(&night_time));
+        assert_ne!(early_time, bursty_time);
     }
 
     #[test]
@@ -2826,6 +3192,12 @@ output_format: postgres-sql
 
         assert!(users > 0, "expected generated users for {:?}", pattern);
         posts as f32 / users as f32
+    }
+
+    fn timestamp_hour(timestamp: &ModelTimestamp) -> usize {
+        timestamp.as_str()[11..13]
+            .parse()
+            .expect("timestamp hour should parse")
     }
 
     struct UnionFind {
