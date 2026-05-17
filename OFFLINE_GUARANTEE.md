@@ -1,13 +1,19 @@
 # Offline Guarantee
 
-Synthetic Pop's core promise is local, offline generation with no cloud service, API key, or telemetry requirement. This document states the current scaffold guarantee and the requirements for future generation releases.
+Synthetic Pop's core promise is local, offline generation with no cloud service,
+API key, or telemetry requirement. This document states the current implemented
+guarantee and the requirements for future releases.
 
-## Current Milestone 1 Scaffold
+## Current Forum Generator
 
 - The Rust workspace has no third-party runtime service integration.
-- The placeholder CLI does not call a network service.
-- No desktop app, web demo, binding, exporter, data pack downloader, or generator is implemented.
-- The repository may still rely on normal developer tooling such as Cargo during local development.
+- The CLI forum generation path does not call a network service.
+- Persona traits, interest assignments, and bios are generated from deterministic
+  local code and static in-code phrase/catalog tables.
+- No external data pack loader, downloader, LLM-backed language generation, or
+  runtime learning is implemented.
+- The repository may still rely on normal developer tooling such as Cargo during
+  local development.
 
 ## Offline Product Requirements
 
