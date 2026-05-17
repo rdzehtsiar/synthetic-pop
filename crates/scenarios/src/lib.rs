@@ -131,10 +131,11 @@ pub fn generate_forum_dataset(
 
     let mut activity_events = Vec::new();
     let communities = generate_communities(config, &mut activity_events)?;
-    let mut users = generate_users(config, &communities, &mut activity_events)?;
+    let mut users = generate_users(config, &mut activity_events)?;
     let personas = generate_personas(config, &mut users, &mut activity_events)?;
     let interests = generate_interests()?;
     assign_user_interests(config, &mut users, &personas, &interests);
+    assign_user_bios(config, &mut users, &personas, &interests);
     let relationships = generate_memberships(
         config,
         &mut users,
@@ -312,6 +313,49 @@ const INTEREST_CATALOG: [InterestSpec; 15] = [
         0.00,
     ),
 ];
+const BIO_ROLES: [&str; 14] = [
+    "backend engineer",
+    "forum moderator",
+    "product analyst",
+    "interface maintainer",
+    "support lead",
+    "research coordinator",
+    "platform operator",
+    "documentation writer",
+    "automation specialist",
+    "privacy reviewer",
+    "data quality lead",
+    "release manager",
+    "toolsmith",
+    "ops tinkerer",
+];
+const BIO_TECH_PHRASES: [&str; 4] = [
+    "keeps an eye on implementation details",
+    "likes reproducible setups",
+    "documents the edge cases",
+    "prefers measured technical tradeoffs",
+];
+const BIO_PLAYFUL_PHRASES: [&str; 4] = [
+    "adds a dry joke when the thread can use it",
+    "enjoys the occasional meme detour",
+    "keeps the mood light without derailing",
+    "collects oddly specific references",
+];
+const BIO_SUPPORTIVE_TONES: [&str; 3] = [
+    "patient with newcomers",
+    "quick to share context",
+    "careful about giving credit",
+];
+const BIO_DIRECT_TONES: [&str; 3] = [
+    "comfortable challenging fuzzy claims",
+    "direct about weak assumptions",
+    "willing to debate the tradeoff",
+];
+const BIO_NEUTRAL_TONES: [&str; 3] = [
+    "keeps notes practical",
+    "leans toward concrete examples",
+    "prefers threads with clear next steps",
+];
 
 #[derive(Debug, Clone, Copy)]
 struct InterestSpec {
@@ -371,7 +415,6 @@ fn generate_communities(
 
 fn generate_users(
     config: &ForumScenarioConfig,
-    communities: &[Community],
     activity_events: &mut Vec<ActivityEvent>,
 ) -> Result<Vec<User>, ForumGenerationError> {
     (0..config.population.users)
@@ -394,11 +437,6 @@ fn generate_users(
                 Locale::new(*locale)?,
                 timestamp.clone(),
             )?;
-            user.bio = Some(format!(
-                "{} follows {} and practical forum discussions.",
-                first,
-                communities[index % communities.len()].name
-            ));
             user.status = Some("active".to_string());
             push_activity(
                 activity_events,
@@ -523,6 +561,50 @@ fn assign_user_interests(
             .take(count)
             .map(|(index, _)| interests[index].id.clone())
             .collect();
+    }
+}
+
+fn assign_user_bios(
+    config: &ForumScenarioConfig,
+    users: &mut [User],
+    personas: &[Persona],
+    interests: &[Interest],
+) {
+    for (user, persona) in users.iter_mut().zip(personas) {
+        let labels = assigned_interest_labels(user, interests);
+        let primary_interest = labels
+            .first()
+            .copied()
+            .expect("users receive interests before bios are generated");
+        let secondary_interest = labels.get(1).copied().unwrap_or(primary_interest);
+        let role = choose_phrase(config, user.id.as_str(), "role", &BIO_ROLES);
+        let detail = bio_detail_phrase(config, user, persona);
+        let tone = bio_tone_phrase(config, user, persona);
+        let bio = match persona.verbosity {
+            Verbosity::Terse => format!(
+                "{}; into {}. {}.",
+                capitalize_first(role),
+                primary_interest,
+                capitalize_first(tone)
+            ),
+            Verbosity::Balanced => format!(
+                "{} focused on {} and {}; {} and {}.",
+                capitalize_first(role),
+                primary_interest,
+                secondary_interest,
+                detail,
+                tone
+            ),
+            Verbosity::Detailed => format!(
+                "{} who follows {} and {}; {}, {}, and prefers discussions with usable takeaways.",
+                capitalize_first(role),
+                primary_interest,
+                secondary_interest,
+                detail,
+                tone
+            ),
+        };
+        user.bio = Some(bio.trim().to_string());
     }
 }
 
@@ -985,6 +1067,62 @@ fn persona_interest_tie_breaker(
     (value as f32) / 1_000_000.0
 }
 
+fn assigned_interest_labels<'a>(user: &User, interests: &'a [Interest]) -> Vec<&'a str> {
+    user.interest_ids
+        .iter()
+        .filter_map(|interest_id| {
+            interests
+                .iter()
+                .find(|interest| interest.id == *interest_id)
+                .map(|interest| interest.label.as_str())
+        })
+        .collect()
+}
+
+fn bio_detail_phrase(config: &ForumScenarioConfig, user: &User, persona: &Persona) -> &'static str {
+    if persona.technical_depth >= 0.62 {
+        return choose_phrase(
+            config,
+            user.id.as_str(),
+            "technical_phrase",
+            &BIO_TECH_PHRASES,
+        );
+    }
+
+    if persona.humor_affinity >= 0.62 || persona.meme_affinity >= 0.62 {
+        return choose_phrase(
+            config,
+            user.id.as_str(),
+            "playful_phrase",
+            &BIO_PLAYFUL_PHRASES,
+        );
+    }
+
+    choose_phrase(
+        config,
+        user.id.as_str(),
+        "neutral_detail",
+        &BIO_NEUTRAL_TONES,
+    )
+}
+
+fn bio_tone_phrase(config: &ForumScenarioConfig, user: &User, persona: &Persona) -> &'static str {
+    if persona.agreeableness >= 0.62 {
+        return choose_phrase(
+            config,
+            user.id.as_str(),
+            "supportive_tone",
+            &BIO_SUPPORTIVE_TONES,
+        );
+    }
+
+    if persona.controversy_affinity >= 0.62 {
+        return choose_phrase(config, user.id.as_str(), "direct_tone", &BIO_DIRECT_TONES);
+    }
+
+    choose_phrase(config, user.id.as_str(), "neutral_tone", &BIO_NEUTRAL_TONES)
+}
+
 fn persona_summary(
     verbosity: Verbosity,
     activity_pattern: ActivityPattern,
@@ -1057,6 +1195,15 @@ fn choose<'a, T>(
     values: &'a [T],
 ) -> &'a T {
     &values[deterministic_index(config, namespace, entity_id, field, values.len())]
+}
+
+fn choose_phrase(
+    config: &ForumScenarioConfig,
+    entity_id: &str,
+    field: &str,
+    values: &'static [&'static str],
+) -> &'static str {
+    values[deterministic_index(config, "bios", entity_id, field, values.len())]
 }
 
 fn timestamp_for(namespace: &str, index: usize) -> Result<ModelTimestamp, ModelValidationError> {
@@ -1164,6 +1311,15 @@ fn title_case(value: &str) -> String {
     }
 
     result
+}
+
+fn capitalize_first(value: &str) -> String {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+
+    format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
 }
 
 #[derive(Debug)]
@@ -1733,6 +1889,84 @@ output_format: postgres-sql
                     .expect("generated post should have a community")
             ));
         }
+    }
+
+    #[test]
+    fn generated_bios_are_deterministic_non_empty_and_persona_aware() {
+        let config = small_forum_config();
+        let first = generate_forum_dataset(&config).expect("first dataset should build");
+        let second = generate_forum_dataset(&config).expect("second dataset should build");
+
+        for (first_user, second_user) in first.users.iter().zip(&second.users) {
+            let bio = first_user.bio.as_deref().expect("bio should exist");
+
+            assert_eq!(first_user.bio, second_user.bio);
+            assert!(!bio.trim().is_empty());
+            assert!(!bio.contains("practical forum discussions"));
+        }
+    }
+
+    #[test]
+    fn generated_bios_change_with_seed() {
+        let mut first_config = small_forum_config();
+        first_config.seed = "bio-seed-a".to_string();
+        let mut second_config = small_forum_config();
+        second_config.seed = "bio-seed-b".to_string();
+        let first = generate_forum_dataset(&first_config).expect("first dataset should build");
+        let second = generate_forum_dataset(&second_config).expect("second dataset should build");
+
+        assert_ne!(first.users[0].bio, second.users[0].bio);
+    }
+
+    #[test]
+    fn generated_bios_reference_only_assigned_interests() {
+        let dataset = generate_forum_dataset(&small_forum_config()).expect("dataset should build");
+
+        for user in &dataset.users {
+            let bio = user.bio.as_deref().expect("bio should exist");
+            for interest in &dataset.interests {
+                if bio.contains(&interest.label) {
+                    assert!(
+                        user.interest_ids.contains(&interest.id),
+                        "{} bio referenced unassigned interest {}: {}",
+                        user.id,
+                        interest.label,
+                        bio
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generated_bios_have_low_duplicate_rate_at_10k_users() {
+        let config = ForumScenarioConfig {
+            seed: "bio-duplicate-smoke".to_string(),
+            population: PopulationConfig { users: 10_000 },
+            communities: vec![
+                "programming".to_string(),
+                "gaming".to_string(),
+                "linux".to_string(),
+                "photography".to_string(),
+            ],
+            content: ContentConfig {
+                posts: 1,
+                comments: 1,
+            },
+            output_format: OutputFormat::Jsonl,
+        };
+        let dataset = generate_forum_dataset(&config).expect("dataset should build");
+        let unique_bios = dataset
+            .users
+            .iter()
+            .filter_map(|user| user.bio.as_deref())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert!(
+            unique_bios.len() >= 1_000,
+            "expected at least 1000 unique bios, got {}",
+            unique_bios.len()
+        );
     }
 
     fn small_forum_config() -> ForumScenarioConfig {
