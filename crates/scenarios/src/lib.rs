@@ -424,7 +424,8 @@ fn generate_users(
             let first = choose(config, "users", entity_id, "first_name", &FIRST_NAMES);
             let last = choose(config, "users", entity_id, "last_name", &LAST_NAMES);
             let locale = choose(config, "users", entity_id, "locale", &LOCALES);
-            let timestamp = timestamp_for("user", index)?;
+            let timestamp = account_created_at_timestamp(config, index, entity_id)?;
+            let account_age = account_age_days(config, index, entity_id);
             let mut user = User::new(
                 id.clone(),
                 format!(
@@ -437,7 +438,7 @@ fn generate_users(
                 Locale::new(*locale)?,
                 timestamp.clone(),
             )?;
-            user.status = Some("active".to_string());
+            user.status = Some(account_status(config, entity_id, account_age).to_string());
             push_activity(
                 activity_events,
                 ActivityEventKind::UserCreated,
@@ -461,7 +462,7 @@ fn generate_personas(
         .map(|(index, user)| {
             let id = persona_id(index)?;
             let entity_id = id.as_str();
-            let timestamp = timestamp_for("persona", index)?;
+            let timestamp = persona_created_at_timestamp(config, index, entity_id, user)?;
             let verbosity = *choose(config, "personas", entity_id, "verbosity", &VERBOSITIES);
             let sleep_phase = *choose(config, "personas", entity_id, "sleep_phase", &SLEEP_PHASES);
             let activity_pattern = activity_pattern_for(config, entity_id);
@@ -623,6 +624,7 @@ fn generate_memberships(
         push_membership(
             &mut relationships,
             activity_events,
+            config,
             user,
             &communities[primary],
             user_index,
@@ -644,6 +646,7 @@ fn generate_memberships(
             push_membership(
                 &mut relationships,
                 activity_events,
+                config,
                 user,
                 &communities[secondary],
                 user_index,
@@ -668,6 +671,7 @@ fn generate_memberships(
             push_membership(
                 &mut relationships,
                 activity_events,
+                config,
                 &mut users[user_index],
                 community,
                 user_index,
@@ -693,7 +697,7 @@ fn generate_social_relationships(
     let mut relationships = Vec::new();
     let mut emitted = HashSet::new();
     let mut friend_pairs = HashSet::new();
-    let active_users = high_activity_user_indexes(personas);
+    let active_users = high_activity_user_indexes(users, personas);
     let ranked_by_user = users
         .iter()
         .enumerate()
@@ -714,8 +718,8 @@ fn generate_social_relationships(
             }
 
             let target_user = &users[candidate.index];
-            let (source, target) = canonical_user_pair(source_user, target_user);
-            if !friend_pairs.insert((source.to_string(), target.to_string())) {
+            let (source, target) = canonical_user_pair_users(source_user, target_user);
+            if !friend_pairs.insert((source.id.to_string(), target.id.to_string())) {
                 continue;
             }
 
@@ -724,6 +728,7 @@ fn generate_social_relationships(
                 activity_events,
                 relationship_offset,
                 RelationshipKind::Friend,
+                config,
                 source,
                 target,
             )?;
@@ -755,8 +760,9 @@ fn generate_social_relationships(
                 activity_events,
                 relationship_offset,
                 RelationshipKind::Follows,
-                &source_user.id,
-                &target_user.id,
+                config,
+                source_user,
+                target_user,
             )?;
         }
     }
@@ -857,7 +863,7 @@ fn ranked_social_candidates(
                 index: candidate_index,
                 affinity,
                 score: affinity * 0.70
-                    + author_activity_score(target_persona) * 0.20
+                    + author_activity_score(target_user, target_persona) * 0.20
                     + tie_breaker * 0.10,
             }
         })
@@ -889,11 +895,11 @@ fn push_social_candidate_index(
     }
 }
 
-fn high_activity_user_indexes(personas: &[Persona]) -> Vec<usize> {
+fn high_activity_user_indexes(users: &[User], personas: &[Persona]) -> Vec<usize> {
     let mut indexes = (0..personas.len()).collect::<Vec<_>>();
     indexes.sort_by(|left, right| {
-        author_activity_score(&personas[*right])
-            .total_cmp(&author_activity_score(&personas[*left]))
+        author_activity_score(&users[*right], &personas[*right])
+            .total_cmp(&author_activity_score(&users[*left], &personas[*left]))
             .then_with(|| {
                 personas[*left]
                     .user_id
@@ -955,30 +961,45 @@ fn canonical_user_pair<'a>(left: &'a User, right: &'a User) -> (&'a UserId, &'a 
     }
 }
 
+fn canonical_user_pair_users<'a>(left: &'a User, right: &'a User) -> (&'a User, &'a User) {
+    if left.id.as_str() <= right.id.as_str() {
+        (left, right)
+    } else {
+        (right, left)
+    }
+}
+
 fn push_social_relationship(
     relationships: &mut Vec<Relationship>,
     activity_events: &mut Vec<ActivityEvent>,
     relationship_offset: usize,
     kind: RelationshipKind,
-    source_id: &UserId,
-    target_id: &UserId,
+    config: &ForumScenarioConfig,
+    source: &User,
+    target: &User,
 ) -> Result<(), ForumGenerationError> {
     let relationship_index = relationship_offset + relationships.len();
     let relationship_id =
         RelationshipId::new(format!("relationship-{:06}", relationship_index + 1))?;
-    let timestamp = timestamp_for("social_relationship", relationship_index)?;
+    let timestamp = relationship_timestamp_after_users(
+        config,
+        "social_relationship",
+        relationship_index,
+        source,
+        Some(target),
+    )?;
 
     relationships.push(Relationship {
         id: relationship_id.clone(),
-        source: RelationshipEndpoint::User(source_id.clone()),
-        target: RelationshipEndpoint::User(target_id.clone()),
+        source: RelationshipEndpoint::User(source.id.clone()),
+        target: RelationshipEndpoint::User(target.id.clone()),
         kind,
         created_at: timestamp.clone(),
     });
     push_activity(
         activity_events,
         ActivityEventKind::RelationshipCreated,
-        Some(source_id.clone()),
+        Some(source.id.clone()),
         ActivityObject::Relationship(relationship_id),
         timestamp,
     )
@@ -1039,6 +1060,7 @@ fn community_interest_indexes(communities: &[Community]) -> HashMap<String, usiz
 fn push_membership(
     relationships: &mut Vec<Relationship>,
     activity_events: &mut Vec<ActivityEvent>,
+    config: &ForumScenarioConfig,
     user: &mut User,
     community: &Community,
     user_index: usize,
@@ -1047,7 +1069,13 @@ fn push_membership(
     let relationship_index = relationships.len();
     let relationship_id =
         RelationshipId::new(format!("relationship-{:06}", relationship_index + 1))?;
-    let timestamp = timestamp_for("membership", user_index + community_index)?;
+    let timestamp = relationship_timestamp_after_users(
+        config,
+        "membership",
+        user_index + community_index,
+        user,
+        None,
+    )?;
 
     user.community_ids.push(community.id.clone());
     relationships.push(Relationship {
@@ -1173,7 +1201,7 @@ fn choose_member<'a>(
     members: &[usize],
     entity_id: &str,
 ) -> &'a User {
-    let index = choose_weighted_member_index(config, personas, members, "posts", entity_id);
+    let index = choose_weighted_member_index(config, users, personas, members, "posts", entity_id);
 
     &users[index]
 }
@@ -1187,7 +1215,7 @@ fn choose_comment_author<'a>(
     entity_id: &str,
 ) -> &'a User {
     let author_index =
-        choose_weighted_member_index(config, personas, members, "comments", entity_id);
+        choose_weighted_member_index(config, users, personas, members, "comments", entity_id);
     let author = &users[author_index];
 
     if members.len() == 1 || author.id.as_str() != post_author_id {
@@ -1213,6 +1241,7 @@ fn choose_comment_author<'a>(
 
 fn choose_weighted_member_index(
     config: &ForumScenarioConfig,
+    users: &[User],
     personas: &[Persona],
     members: &[usize],
     namespace: &str,
@@ -1221,7 +1250,7 @@ fn choose_weighted_member_index(
     let candidate_count = members.len().min(3);
     let mut best =
         members[deterministic_index(config, namespace, entity_id, "author", members.len())];
-    let mut best_score = author_activity_score(&personas[best])
+    let mut best_score = author_activity_score(&users[best], &personas[best])
         + author_tie_breaker(config, namespace, entity_id, personas[best].id.as_str());
 
     for candidate_index in 0..candidate_count {
@@ -1232,7 +1261,7 @@ fn choose_weighted_member_index(
         };
         let offset = deterministic_index(config, namespace, entity_id, field, members.len());
         let user_index = members[offset];
-        let score = author_activity_score(&personas[user_index])
+        let score = author_activity_score(&users[user_index], &personas[user_index])
             + author_tie_breaker(
                 config,
                 namespace,
@@ -1249,7 +1278,7 @@ fn choose_weighted_member_index(
     best
 }
 
-fn author_activity_score(persona: &Persona) -> f32 {
+fn author_activity_score(user: &User, persona: &Persona) -> f32 {
     let activity = match persona.activity_pattern {
         ActivityPattern::Lurker => 0.05,
         ActivityPattern::Casual => 0.25,
@@ -1258,7 +1287,12 @@ fn author_activity_score(persona: &Persona) -> f32 {
         ActivityPattern::PowerUser => 0.90,
     };
 
-    persona.posting_frequency * 0.50 + persona.extroversion * 0.25 + activity * 0.25
+    let base = persona.posting_frequency * 0.50 + persona.extroversion * 0.25 + activity * 0.25;
+    let maturity = (account_age_days_for_user(user) as f32 / ACCOUNT_REFERENCE_DAY as f32)
+        .clamp(0.0, 1.0)
+        * 0.12;
+
+    ((base + maturity) * account_activity_multiplier(user)).clamp(0.0, 1.0)
 }
 
 fn author_tie_breaker(
@@ -1278,6 +1312,25 @@ fn persona_for_user<'a>(personas: &'a [Persona], user_id: &UserId) -> &'a Person
         .iter()
         .find(|persona| &persona.user_id == user_id)
         .expect("generated users should have matching personas")
+}
+
+fn account_age_days_for_user(user: &User) -> usize {
+    let created_at = minutes_from_timestamp(&user.created_at);
+
+    if created_at >= CONTENT_START_MINUTES {
+        0
+    } else {
+        (CONTENT_START_MINUTES - created_at) / MINUTES_PER_DAY
+    }
+}
+
+fn account_activity_multiplier(user: &User) -> f32 {
+    match user.status.as_deref() {
+        Some("dormant") => 0.15,
+        Some("veteran") => 1.08,
+        _ if account_age_days_for_user(user) <= 45 => 0.75,
+        _ => 1.0,
+    }
 }
 
 fn affinity_score(
@@ -1671,7 +1724,89 @@ fn timestamp_for(namespace: &str, index: usize) -> Result<ModelTimestamp, ModelV
 }
 
 const MINUTES_PER_DAY: usize = 1_440;
-const CONTENT_START_MINUTES: usize = 30_000;
+const ACCOUNT_REFERENCE_DAY: usize = 420;
+const CONTENT_START_MINUTES: usize = ACCOUNT_REFERENCE_DAY * MINUTES_PER_DAY;
+
+fn account_created_at_timestamp(
+    config: &ForumScenarioConfig,
+    index: usize,
+    entity_id: &str,
+) -> Result<ModelTimestamp, ModelValidationError> {
+    let age_days = account_age_days(config, index, entity_id);
+    let minute_of_day =
+        deterministic_index(config, "accounts", entity_id, "join_minute", 1_020) + 8 * 60;
+    let created_minutes = CONTENT_START_MINUTES - age_days * MINUTES_PER_DAY + minute_of_day;
+
+    ModelTimestamp::new(timestamp_from_minutes(created_minutes))
+}
+
+fn persona_created_at_timestamp(
+    config: &ForumScenarioConfig,
+    index: usize,
+    entity_id: &str,
+    user: &User,
+) -> Result<ModelTimestamp, ModelValidationError> {
+    let base = minutes_from_timestamp(&timestamp_for("persona", index)?);
+    let delay = 20 + deterministic_index(config, "personas", entity_id, "creation_delay", 180);
+
+    ModelTimestamp::new(timestamp_from_minutes(
+        base.max(minutes_from_timestamp(&user.created_at) + delay),
+    ))
+}
+
+fn account_age_days(config: &ForumScenarioConfig, index: usize, entity_id: &str) -> usize {
+    let band = deterministic_index(config, "accounts", entity_id, "age_band", 100);
+    let offset = deterministic_index(config, "accounts", entity_id, "age_offset", 90);
+    let cohort_age = match band {
+        0..=14 => 7 + offset.min(28),
+        15..=34 => 45 + offset.min(75),
+        35..=79 => 120 + offset * 2,
+        _ => 300 + offset,
+    };
+    let index_spread = index % 21;
+
+    (cohort_age + index_spread).min(ACCOUNT_REFERENCE_DAY - 1)
+}
+
+fn account_status(
+    config: &ForumScenarioConfig,
+    entity_id: &str,
+    account_age_days: usize,
+) -> &'static str {
+    let dormancy = deterministic_index(config, "accounts", entity_id, "dormancy", 100);
+
+    if account_age_days >= 180 && dormancy < 20 {
+        "dormant"
+    } else if account_age_days >= 300 {
+        "veteran"
+    } else {
+        "active"
+    }
+}
+
+fn relationship_timestamp_after_users(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    index: usize,
+    source: &User,
+    target: Option<&User>,
+) -> Result<ModelTimestamp, ModelValidationError> {
+    let base = minutes_from_timestamp(&timestamp_for(namespace, index)?);
+    let target_created_at = target
+        .map(|user| minutes_from_timestamp(&user.created_at))
+        .unwrap_or(0);
+    let minimum = minutes_from_timestamp(&source.created_at).max(target_created_at)
+        + 60
+        + deterministic_index(
+            config,
+            namespace,
+            source.id.as_str(),
+            "relationship_delay",
+            2_880,
+        );
+
+    ModelTimestamp::new(timestamp_from_minutes(base.max(minimum)))
+}
 
 fn scheduled_post_timestamp(
     config: &ForumScenarioConfig,
@@ -1720,8 +1855,15 @@ fn scheduled_activity_minutes(
     let local_minute = scheduled_local_minute(config, namespace, entity_id, persona);
     let timezone_offset = timezone_offset_hours(config, author);
     let utc_hour = (local_hour + 24 - timezone_offset).rem_euclid(24);
+    let scheduled =
+        CONTENT_START_MINUTES + day * MINUTES_PER_DAY + utc_hour as usize * 60 + local_minute;
+    let minimum = minutes_from_timestamp(&author.created_at) + 60;
 
-    CONTENT_START_MINUTES + day * MINUTES_PER_DAY + utc_hour as usize * 60 + local_minute
+    if scheduled >= minimum {
+        scheduled
+    } else {
+        scheduled + ((minimum - scheduled) / MINUTES_PER_DAY + 1) * MINUTES_PER_DAY
+    }
 }
 
 fn scheduled_activity_day(
@@ -2445,7 +2587,7 @@ output_format: postgres-sql
         );
         assert_eq!(dataset.users[0].username, "harper.gray0001");
         assert_eq!(dataset.users[0].display_name, "Harper Gray");
-        assert_eq!(dataset.users[0].created_at.as_str(), "2026-01-07T22:40:00Z");
+        assert_eq!(dataset.users[0].created_at.as_str(), "2026-05-07T11:49:00Z");
         assert_eq!(
             dataset.communities[0].id.as_str(),
             "community-000001-general"
@@ -2497,6 +2639,58 @@ output_format: postgres-sql
             }
             ForumGenerationError::Model(error) => panic!("expected validation error, got {error}"),
         }
+    }
+
+    #[test]
+    fn generated_population_includes_new_and_veteran_accounts() {
+        let dataset = generate_forum_dataset(&forum_config_with("account-aging", 600, 100, 50))
+            .expect("dataset should build");
+        let ages = dataset
+            .users
+            .iter()
+            .map(account_age_days_for_user)
+            .collect::<Vec<_>>();
+
+        assert!(ages.iter().any(|&age| age <= 45));
+        assert!(ages.iter().any(|&age| age >= 300));
+        assert!(dataset
+            .users
+            .iter()
+            .any(|user| user.status.as_deref() == Some("veteran")));
+        assert!(dataset
+            .users
+            .iter()
+            .any(|user| user.status.as_deref() == Some("dormant")));
+    }
+
+    #[test]
+    fn account_age_and_dormancy_influence_authored_activity() {
+        let config = forum_config_with("account-aging-activity", 1_000, 3_000, 1);
+        let first = generate_forum_dataset(&config).expect("first dataset should build");
+        let second = generate_forum_dataset(&config).expect("second dataset should build");
+        let mut post_counts = HashMap::<UserId, usize>::new();
+
+        assert_eq!(
+            first
+                .users
+                .iter()
+                .map(|user| (&user.id, &user.created_at, &user.status))
+                .collect::<Vec<_>>(),
+            second
+                .users
+                .iter()
+                .map(|user| (&user.id, &user.created_at, &user.status))
+                .collect::<Vec<_>>()
+        );
+
+        for post in &first.posts {
+            *post_counts.entry(post.author_id.clone()).or_insert(0) += 1;
+        }
+
+        let active_average = authored_average_for_status(&first, &post_counts, "active");
+        let dormant_average = authored_average_for_status(&first, &post_counts, "dormant");
+
+        assert!(active_average > dormant_average * 2.0);
     }
 
     #[test]
@@ -3192,6 +3386,25 @@ output_format: postgres-sql
 
         assert!(users > 0, "expected generated users for {:?}", pattern);
         posts as f32 / users as f32
+    }
+
+    fn authored_average_for_status(
+        dataset: &ForumDataset,
+        post_counts: &HashMap<UserId, usize>,
+        status: &str,
+    ) -> f32 {
+        let users = dataset
+            .users
+            .iter()
+            .filter(|user| user.status.as_deref() == Some(status))
+            .collect::<Vec<_>>();
+        let posts = users
+            .iter()
+            .map(|user| post_counts.get(&user.id).copied().unwrap_or_default())
+            .sum::<usize>();
+
+        assert!(!users.is_empty(), "expected generated {status} users");
+        posts as f32 / users.len() as f32
     }
 
     fn timestamp_hour(timestamp: &ModelTimestamp) -> usize {
