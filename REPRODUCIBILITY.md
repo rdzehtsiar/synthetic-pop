@@ -30,6 +30,9 @@ generation and export surface and what must be true before v0.
   loaded for the catalog in this milestone.
 - Bios are deterministic template strings generated after persona and interest
   assignment. They can reference assigned interests and local phrase pools only.
+- Post and comment language for Milestone 4 is generated with a deterministic,
+  table-driven procedure (`post/comment intent` -> persona-style profile ->
+  transformation pipeline -> phrase mutation), with no LLM component.
 - The deterministic RNG algorithm is identified by
   `synthetic-pop-deterministic-rng-v1:length-delimited-utf8+fnv1a64+splitmix64`
   and exposed through `reproducibility_metadata()`.

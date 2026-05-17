@@ -10,6 +10,9 @@ guarantee and the requirements for future releases.
 - The CLI forum generation path does not call a network service.
 - Persona traits, interest assignments, and bios are generated from deterministic
   local code and static in-code phrase/catalog tables.
+- Forum post and comment bodies are generated deterministically from local
+  table-driven intent/style/mutation tables with no runtime network access or LLM
+  involvement.
 - No external data pack loader, downloader, LLM-backed language generation, or
   runtime learning is implemented.
 - The repository may still rely on normal developer tooling such as Cargo during

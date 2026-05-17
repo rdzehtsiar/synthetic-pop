@@ -166,6 +166,7 @@ pub fn generate_forum_dataset(
         &users,
         &personas,
         &posts,
+        &communities,
         &community_indexes,
         &community_members,
         &mut activity_events,
@@ -326,16 +327,6 @@ const POST_TOPICS: [&str; 8] = [
     "roadmap",
     "retrospective",
 ];
-const COMMENT_TONES: [&str; 8] = [
-    "This matches what I have seen as well.",
-    "Could you share one more concrete example?",
-    "The second option seems easier to maintain.",
-    "I would document the tradeoff before changing it.",
-    "That should work for smaller teams first.",
-    "The edge case is worth testing before rollout.",
-    "Thanks for writing up the context.",
-    "I tried a similar approach last week.",
-];
 const VERBOSITIES: [Verbosity; 3] = [Verbosity::Terse, Verbosity::Balanced, Verbosity::Detailed];
 const SLEEP_PHASES: [SleepPhase; 4] = [
     SleepPhase::EarlyBird,
@@ -445,6 +436,203 @@ const BIO_NEUTRAL_TONES: [&str; 3] = [
     "leans toward concrete examples",
     "prefers threads with clear next steps",
 ];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SemanticIntent {
+    Frustration,
+    Excitement,
+    TechnicalAdvice,
+    Agreement,
+    Disagreement,
+    Question,
+    Clarification,
+    Humor,
+    Sarcasm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UtteranceKind {
+    Post,
+    Comment,
+}
+
+#[derive(Debug, Clone)]
+struct LanguageDraft {
+    intent: SemanticIntent,
+    kind: UtteranceKind,
+    author_name: String,
+    community_name: String,
+    topic: String,
+    referenced_post_title: Option<String>,
+    referenced_post_topic: Option<String>,
+}
+
+struct StyleProfile {
+    verbosity: Verbosity,
+    detail_bias: usize,
+    abbreviation_bias: usize,
+    humor_bias: usize,
+    sarcasm_bias: usize,
+    typo_bias: usize,
+    emoji_bias: usize,
+    question_bias: bool,
+}
+
+const POST_FRUSTRATION_TEMPLATES: &[&str] = &[
+    "{author} is frustrated by recurring blockers around {topic} in {community}.",
+    "{author} says the {topic} path in {community} keeps getting messy.",
+    "{author} is not happy with how {topic} keeps getting pushed around in {community}.",
+];
+const POST_EXCITEMENT_TEMPLATES: &[&str] = &[
+    "{author} is excited to launch a fresh discussion on {topic} in {community}.",
+    "{author} sees a strong turn forward for {topic} in {community}.",
+    "A lot of energy is building around {topic} in {community}, according to {author}.",
+];
+const POST_TECHNICAL_ADVICE_TEMPLATES: &[&str] = &[
+    "{author} suggests a technical route for {topic} in {community}: clarify assumptions, then measure.",
+    "{author} shares implementation advice for {topic} in {community} with repeatable checks.",
+    "{author} recommends a practical {topic} pattern for {community} with explicit steps.",
+];
+const POST_AGREEMENT_TEMPLATES: &[&str] = &[
+    "{author} agrees that progress on {topic} in {community} is worth moving forward.",
+    "{author} is aligned that {topic} needs a stable baseline in {community}.",
+    "{author} concurs and thinks {topic} can be done cleanly in {community}.",
+];
+const POST_DISAGREEMENT_TEMPLATES: &[&str] = &[
+    "{author} disagrees with the current framing of {topic} in {community}.",
+    "{author} questions whether {topic} belongs in {community} this way.",
+    "{author} is pushing back on the direction for {topic} in {community}.",
+];
+const POST_QUESTION_TEMPLATES: &[&str] = &[
+    "{author} asks how {topic} should behave first inside {community}.",
+    "{author} wants to confirm what success for {topic} looks like in {community}.",
+    "{author} is asking whether {topic} should be prioritized for {community}.",
+];
+const POST_CLARIFICATION_TEMPLATES: &[&str] = &[
+    "{author} is asking for clarification on {topic} expectations in {community}.",
+    "{author} needs one clear boundary for {topic} in {community} before proceeding.",
+    "{author} requests concrete definition for the {topic} scope in {community}.",
+];
+const POST_HUMOR_TEMPLATES: &[&str] = &[
+    "{author} says {topic} in {community} feels like a surprise weekend project.",
+    "{author} jokes that {topic} in {community} is the fastest route to a spirited thread.",
+    "{author} adds a playful take: {topic} in {community} always finds a way to surprise us.",
+];
+const POST_SARCASTIC_TEMPLATES: &[&str] = &[
+    "{author} notes that {topic} in {community} is obviously perfectly straightforward.",
+    "{author} dryly observes that {topic} in {community} somehow always improves at scale.",
+    "{author} points out that {topic} in {community} may be easier after the third try.",
+];
+
+const COMMENT_FRUSTRATION_TEMPLATES: &[&str] = &[
+    "I keep running into friction on {topic} here; I'd like a simpler path.",
+    "I'm still seeing edge cases with {post_topic} and this feels brittle.",
+    "I'm not fully convinced this {topic} framing is complete yet.",
+];
+const COMMENT_EXCITEMENT_TEMPLATES: &[&str] = &[
+    "This is exciting; {topic} here looks like a good direction.",
+    "I like this push on {topic}; the result is promising.",
+    "This should help a lot, especially around {post_topic}.",
+];
+const COMMENT_TECHNICAL_ADVICE_TEMPLATES: &[&str] = &[
+    "I'd suggest tracing ownership and contract boundaries before changing {topic}.",
+    "The safer route is to add a test matrix for {topic} first.",
+    "One practical approach is to document assumptions and then automate {post_topic}.",
+];
+const COMMENT_AGREEMENT_TEMPLATES: &[&str] = &[
+    "Agreed, this is a solid read on {topic}.",
+    "You're right that this framing of {topic} is useful.",
+    "Totally, {topic} here is the right first step.",
+];
+const COMMENT_DISAGREEMENT_TEMPLATES: &[&str] = &[
+    "I see a different path for {topic}; this might overcomplicate things.",
+    "I'm not sold on this version of {topic} yet.",
+    "I can't quite get behind this {topic} direction right now.",
+];
+const COMMENT_QUESTION_TEMPLATES: &[&str] = &[
+    "Could you clarify {topic} by sharing what changed first?",
+    "Could this work for {post_topic}, or is there a hidden constraint?",
+    "Do you expect this to hold across all {topic} contexts?",
+];
+const COMMENT_CLARIFICATION_TEMPLATES: &[&str] = &[
+    "A quick clarification on {topic} would help reduce ambiguity.",
+    "Can you define what {topic} success looks like after rollout?",
+    "What specifically does {topic} guarantee in {post_topic}?",
+];
+const COMMENT_HUMOR_TEMPLATES: &[&str] = &[
+    "Haha, this {topic} story has the right amount of chaos.",
+    "That's the kind of {topic} energy people remember and talk about.",
+    "I'm here for this {topic} momentum and the accidental comedy in it.",
+];
+const COMMENT_SARCASTIC_TEMPLATES: &[&str] = &[
+    "Sure, this {topic} plan is exactly what everyone asked for.",
+    "If this lands exactly as written, we can close that can of worms.",
+    "Brilliant move—let's see how long before the first rollback.",
+];
+
+const OPENER_TEMPLATES: &[&str] = &["", "Quick thought:", "FYI:", "Note:", "In my view:"];
+const CLOSER_TEMPLATES: &[&str] = &[
+    "",
+    "Thoughts?",
+    "Would be good to confirm.",
+    "What do others think?",
+    "Totally open to adjustments.",
+];
+
+const AGREEMENT_VARIANTS: &[&str] = &[
+    "I can get behind that.",
+    "That direction reads correctly.",
+    "I agree with the core idea.",
+];
+const ADVICE_VARIANTS: &[&str] = &[
+    "I'd document assumptions first.",
+    "Try a small dry run.",
+    "A staged rollout usually helps.",
+];
+const CONCERN_VARIANTS: &[&str] = &[
+    "Still, there is a tradeoff to call out.",
+    "The main risk is context drift.",
+    "The hidden cost might be operational overhead.",
+];
+const SYNONYM_GROUPS: &[&[&str]] = &[
+    &["discussion", "thread", "conversation"],
+    &["issue", "problem", "concern"],
+    &["community", "group", "space"],
+    &["technical", "practical", "engineering"],
+];
+const ABBREVIATION_PAIRS: &[(&str, &str)] = &[
+    ("because", "bc"),
+    ("before", "b4"),
+    ("without", "w/o"),
+    ("between", "btwn"),
+    ("message", "msg"),
+    ("example", "ex"),
+];
+const TYPO_PAIRS: &[(&str, &str)] = &[
+    ("definitely", "definately"),
+    ("separate", "seperate"),
+    ("their", "thier"),
+    ("community", "communtiy"),
+    ("documentation", "documenation"),
+];
+const HUMOR_VARIANTS: &[&str] = &[
+    "haha.",
+    "That energy is a real win.",
+    "This one made my day.",
+    "Love this direction.",
+];
+const SARCASTIC_VARIANTS: &[&str] = &[
+    "genuinely, this reads like a long game.",
+    "classic.",
+    "as always.",
+];
+const STRUCTURAL_REWRITES: &[&str] = &[
+    "{body}",
+    "{body}; {connector}",
+    "{connector}: {body}",
+    "{body}, and {connector}.",
+    "{connector} in that thread: {body}",
+    "{body}; {connector}",
+];
 
 #[derive(Debug, Clone, Copy)]
 struct InterestSpec {
@@ -524,7 +712,7 @@ fn generate_users(
                     index + 1
                 ),
                 format!("{first} {last}"),
-                Locale::new(*locale)?,
+                Locale::new(locale)?,
                 timestamp.clone(),
             )?;
             user.status = Some(account_status(config, entity_id, account_age).to_string());
@@ -552,8 +740,8 @@ fn generate_personas(
             let id = persona_id(index)?;
             let entity_id = id.as_str();
             let timestamp = persona_created_at_timestamp(config, index, entity_id, user)?;
-            let verbosity = *choose(config, "personas", entity_id, "verbosity", &VERBOSITIES);
-            let sleep_phase = *choose(config, "personas", entity_id, "sleep_phase", &SLEEP_PHASES);
+            let verbosity = choose(config, "personas", entity_id, "verbosity", &VERBOSITIES);
+            let sleep_phase = choose(config, "personas", entity_id, "sleep_phase", &SLEEP_PHASES);
             let activity_pattern = activity_pattern_for(config, entity_id);
             let openness = persona_score(config, entity_id, "openness");
             let extroversion = persona_score(config, entity_id, "extroversion");
@@ -1207,15 +1395,27 @@ fn generate_posts(
             let topic = choose(config, "posts", id.as_str(), "topic", &POST_TOPICS);
             let persona = persona_for_user(personas, &author.id);
             let timestamp = scheduled_post_timestamp(config, index, id.as_str(), author, persona)?;
-            let mut post = Post::new(
-                id.clone(),
-                author.id.clone(),
-                format!(
-                    "{} started a thread about {} in {}.",
-                    author.display_name, topic, community.name
-                ),
-                timestamp.clone(),
-            )?;
+            let intent = post_intent_for(
+                config,
+                id.as_str(),
+                topic,
+                &community.name,
+                &author.display_name,
+                persona,
+            );
+            let draft = LanguageDraft {
+                intent,
+                kind: UtteranceKind::Post,
+                author_name: author.display_name.clone(),
+                community_name: community.name.clone(),
+                topic: topic.to_string(),
+                referenced_post_title: None,
+                referenced_post_topic: None,
+            };
+            let rendered = render_intent_draft(config, "posts", id.as_str(), &draft);
+            let body =
+                apply_style_pipeline(config, "posts", id.as_str(), persona, &draft, rendered);
+            let mut post = Post::new(id.clone(), author.id.clone(), body, timestamp.clone())?;
             post.community_id = Some(community.id.clone());
             post.title = Some(format!("{}: {}", community.name, title_case(topic)));
             push_activity(
@@ -1230,11 +1430,13 @@ fn generate_posts(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_comments(
     config: &ForumScenarioConfig,
     users: &[User],
     personas: &[Persona],
     posts: &[Post],
+    communities: &[Community],
     community_indexes: &HashMap<CommunityId, usize>,
     community_members: &[Vec<usize>],
     activity_events: &mut Vec<ActivityEvent>,
@@ -1260,7 +1462,44 @@ fn generate_comments(
                 post.author_id.as_str(),
                 id.as_str(),
             );
-            let body = choose(config, "comments", id.as_str(), "body", &COMMENT_TONES);
+            let referenced_title = post.title.clone();
+            let referenced_topic = referenced_title
+                .as_deref()
+                .and_then(|title| title.split_once(": ").map(|(_, topic)| topic))
+                .map(str::to_string)
+                .unwrap_or_else(|| topic_for_post_title(post));
+            let intent = comment_intent_for(
+                config,
+                id.as_str(),
+                post,
+                &author.display_name,
+                persona_for_user(personas, &author.id),
+            );
+            let community_name = communities
+                .get(*community_indexes.get(community_id).expect(
+                    "generated post community should be available for comment language generation",
+                ))
+                .expect("community index should resolve for post comment language")
+                .name
+                .clone();
+            let draft = LanguageDraft {
+                intent,
+                kind: UtteranceKind::Comment,
+                author_name: author.display_name.clone(),
+                community_name,
+                topic: post_topic_from_title(post),
+                referenced_post_title: referenced_title,
+                referenced_post_topic: Some(referenced_topic),
+            };
+            let rendered = render_intent_draft(config, "comments", id.as_str(), &draft);
+            let body = apply_style_pipeline(
+                config,
+                "comments",
+                id.as_str(),
+                persona_for_user(personas, &author.id),
+                &draft,
+                rendered,
+            );
             let persona = persona_for_user(personas, &author.id);
             let timestamp =
                 scheduled_comment_timestamp(config, index, id.as_str(), post, author, persona)?;
@@ -1268,7 +1507,7 @@ fn generate_comments(
                 id.clone(),
                 post.id.clone(),
                 author.id.clone(),
-                *body,
+                body,
                 timestamp.clone(),
             )?;
             push_activity(
@@ -2198,14 +2437,14 @@ fn deterministic_index(
     usize::try_from(index).expect("bounded random index should fit in usize")
 }
 
-fn choose<'a, T>(
+fn choose<T: Copy>(
     config: &ForumScenarioConfig,
     namespace: &str,
     entity_id: &str,
     field: &str,
-    values: &'a [T],
-) -> &'a T {
-    &values[deterministic_index(config, namespace, entity_id, field, values.len())]
+    values: &[T],
+) -> T {
+    values[deterministic_index(config, namespace, entity_id, field, values.len())]
 }
 
 fn choose_phrase(
@@ -2215,6 +2454,691 @@ fn choose_phrase(
     values: &'static [&'static str],
 ) -> &'static str {
     values[deterministic_index(config, "bios", entity_id, field, values.len())]
+}
+
+fn post_intent_for(
+    config: &ForumScenarioConfig,
+    post_id: &str,
+    topic: &str,
+    community: &str,
+    _author: &str,
+    persona: &Persona,
+) -> SemanticIntent {
+    let technical_topic =
+        topic_contains(topic, &["bug", "tooling", "architecture", "roadmap", "api"]);
+    let social_topic = topic_contains(topic, &["community", "norms", "resource"]);
+    let excitement_topic = topic_contains(
+        topic,
+        &["daily", "retrospective", "launch", "announcements"],
+    );
+    let humor_topic = topic_contains(topic, &["memes", "humor", "light", "fun"]);
+    let profile = style_profile_for(persona);
+    let topic_pressure = (topic.len() as f32) / 22.0;
+    let community_pressure = (community.len() as f32) / 12.0;
+
+    let mut weights = [
+        (SemanticIntent::Frustration, 600usize),
+        (SemanticIntent::Excitement, 600usize),
+        (SemanticIntent::TechnicalAdvice, 600usize),
+        (SemanticIntent::Agreement, 600usize),
+        (SemanticIntent::Disagreement, 600usize),
+        (SemanticIntent::Question, 600usize),
+        (SemanticIntent::Clarification, 600usize),
+        (SemanticIntent::Humor, 600usize),
+        (SemanticIntent::Sarcasm, 600usize),
+    ];
+
+    weights[0].1 = weights[0].1.saturating_add(
+        ((1.0 - persona.technical_depth) * 420.0 + (1.0 - persona.agreeableness) * 260.0) as usize,
+    );
+    weights[1].1 = weights[1].1.saturating_add(
+        ((1.0 + excitement_topic as f32) * 190.0 + community_pressure * 15.0) as usize,
+    );
+    weights[2].1 = weights[2].1.saturating_add(
+        ((persona.technical_depth * 2_800.0)
+            + (persona.conscientiousness * 200.0)
+            + technical_topic as f32 * 240.0) as usize,
+    );
+    weights[3].1 = weights[3]
+        .1
+        .saturating_add(((persona.agreeableness + persona.technical_depth) * 350.0) as usize);
+    weights[4].1 = weights[4].1.saturating_add(
+        ((1.0 + persona.controversy_affinity) * 340.0 + profile.sarcasm_bias as f32 * 0.8) as usize,
+    );
+    weights[5].1 = weights[5].1.saturating_add(
+        ((persona.extroversion + persona.posting_frequency) * 360.0 + topic_pressure * 80.0)
+            as usize,
+    );
+    weights[6].1 = weights[6].1.saturating_add(
+        ((persona.conscientiousness * 360.0 + social_topic as f32 * 90.0)
+            + profile.question_bias as usize as f32) as usize,
+    );
+    weights[7].1 = weights[7].1.saturating_add(
+        ((profile.humor_bias as f32 * 1.1) + humor_topic as f32 * 130.0 + community_pressure * 5.0)
+            as usize,
+    );
+    weights[8].1 = weights[8].1.saturating_add(
+        ((profile.sarcasm_bias as f32 * 1.0) + persona.neuroticism * 280.0 + topic_pressure * 70.0)
+            as usize,
+    );
+
+    select_intent(
+        deterministic_index(config, "posts", post_id, "intent", 10_000),
+        &weights,
+    )
+}
+
+fn comment_intent_for(
+    config: &ForumScenarioConfig,
+    comment_id: &str,
+    post: &Post,
+    _author: &str,
+    persona: &Persona,
+) -> SemanticIntent {
+    let mut weights = [
+        (SemanticIntent::Frustration, 560usize),
+        (SemanticIntent::Excitement, 560usize),
+        (SemanticIntent::TechnicalAdvice, 560usize),
+        (SemanticIntent::Agreement, 560usize),
+        (SemanticIntent::Disagreement, 560usize),
+        (SemanticIntent::Question, 560usize),
+        (SemanticIntent::Clarification, 560usize),
+        (SemanticIntent::Humor, 560usize),
+        (SemanticIntent::Sarcasm, 560usize),
+    ];
+    let topic = post_topic_from_title(post);
+    let technical_topic =
+        topic_contains(&topic, &["bug", "tooling", "architecture", "api", "data"]);
+    let question_density = topic_contains(
+        &topic,
+        &[
+            "how", "why", "should", "whether", "if", "can", "when", "where",
+        ],
+    );
+    let style = style_profile_for(persona);
+    let post_title_bias = if post.title.is_some() { 20 } else { 0 };
+    let complexity = (topic.len() as f32) / 24.0;
+
+    weights[0].1 = weights[0]
+        .1
+        .saturating_add(((1.0 - persona.openness) * 390.0 + complexity * 85.0) as usize);
+    weights[1].1 = weights[1]
+        .1
+        .saturating_add((style.detail_bias as f32 * 0.35 + post_title_bias as f32) as usize);
+    weights[2].1 = weights[2].1.saturating_add(
+        ((persona.technical_depth * 920.0) + (technical_topic as f32) * 230.0 + complexity * 40.0)
+            as usize,
+    );
+    weights[3].1 = weights[3].1.saturating_add(
+        ((persona.agreeableness + persona.conscientiousness) * 420.0 + complexity * 50.0) as usize,
+    );
+    weights[4].1 = weights[4].1.saturating_add(
+        ((persona.controversy_affinity + persona.neuroticism) * 360.0 + post_title_bias as f32)
+            as usize,
+    );
+    weights[5].1 = weights[5].1.saturating_add(
+        ((persona.posting_frequency + persona.extroversion) * 350.0) as usize
+            + question_density * 45,
+    );
+    weights[6].1 = weights[6].1.saturating_add(
+        ((1.0 - persona.agreeableness) * 360.0
+            + complexity * 75.0
+            + style.question_bias as usize as f32 * 120.0) as usize,
+    );
+    weights[7].1 = weights[7]
+        .1
+        .saturating_add(((persona.humor_affinity + persona.meme_affinity) * 520.0) as usize);
+    weights[8].1 = weights[8].1.saturating_add(
+        (persona.controversy_affinity * 460.0 + style.sarcasm_bias as f32) as usize
+            + style.question_bias as usize * 20,
+    );
+
+    select_intent(
+        deterministic_index(config, "comments", comment_id, "intent", 10_000),
+        &weights,
+    )
+}
+
+fn render_intent_draft(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    draft: &LanguageDraft,
+) -> String {
+    let template = match draft.kind {
+        UtteranceKind::Post => {
+            choose_intent_template(config, namespace, entity_id, draft.intent, DraftKind::Post)
+        }
+        UtteranceKind::Comment => choose_intent_template(
+            config,
+            namespace,
+            entity_id,
+            draft.intent,
+            DraftKind::Comment,
+        ),
+    };
+
+    template_replace(template, draft)
+}
+
+#[derive(Clone, Copy)]
+enum DraftKind {
+    Post,
+    Comment,
+}
+
+fn choose_intent_template(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    intent: SemanticIntent,
+    kind: DraftKind,
+) -> &'static str {
+    match kind {
+        DraftKind::Post => choose(
+            config,
+            namespace,
+            entity_id,
+            "post_intent_template",
+            post_template_bank(intent),
+        ),
+        DraftKind::Comment => choose(
+            config,
+            namespace,
+            entity_id,
+            "comment_intent_template",
+            comment_template_bank(intent),
+        ),
+    }
+}
+
+fn post_template_bank(intent: SemanticIntent) -> &'static [&'static str] {
+    match intent {
+        SemanticIntent::Frustration => POST_FRUSTRATION_TEMPLATES,
+        SemanticIntent::Excitement => POST_EXCITEMENT_TEMPLATES,
+        SemanticIntent::TechnicalAdvice => POST_TECHNICAL_ADVICE_TEMPLATES,
+        SemanticIntent::Agreement => POST_AGREEMENT_TEMPLATES,
+        SemanticIntent::Disagreement => POST_DISAGREEMENT_TEMPLATES,
+        SemanticIntent::Question => POST_QUESTION_TEMPLATES,
+        SemanticIntent::Clarification => POST_CLARIFICATION_TEMPLATES,
+        SemanticIntent::Humor => POST_HUMOR_TEMPLATES,
+        SemanticIntent::Sarcasm => POST_SARCASTIC_TEMPLATES,
+    }
+}
+
+fn comment_template_bank(intent: SemanticIntent) -> &'static [&'static str] {
+    match intent {
+        SemanticIntent::Frustration => COMMENT_FRUSTRATION_TEMPLATES,
+        SemanticIntent::Excitement => COMMENT_EXCITEMENT_TEMPLATES,
+        SemanticIntent::TechnicalAdvice => COMMENT_TECHNICAL_ADVICE_TEMPLATES,
+        SemanticIntent::Agreement => COMMENT_AGREEMENT_TEMPLATES,
+        SemanticIntent::Disagreement => COMMENT_DISAGREEMENT_TEMPLATES,
+        SemanticIntent::Question => COMMENT_QUESTION_TEMPLATES,
+        SemanticIntent::Clarification => COMMENT_CLARIFICATION_TEMPLATES,
+        SemanticIntent::Humor => COMMENT_HUMOR_TEMPLATES,
+        SemanticIntent::Sarcasm => COMMENT_SARCASTIC_TEMPLATES,
+    }
+}
+
+fn template_replace(template: &str, draft: &LanguageDraft) -> String {
+    template
+        .replace("{author}", &draft.author_name)
+        .replace("{community}", &draft.community_name)
+        .replace("{topic}", &draft.topic)
+        .replace(
+            "{post_title}",
+            draft
+                .referenced_post_title
+                .as_deref()
+                .unwrap_or(&draft.topic),
+        )
+        .replace(
+            "{post_topic}",
+            draft
+                .referenced_post_topic
+                .as_deref()
+                .unwrap_or(&draft.topic),
+        )
+}
+
+fn select_intent(sample: usize, weights: &[(SemanticIntent, usize); 9]) -> SemanticIntent {
+    let total = weights.iter().map(|(_, weight)| weight).sum::<usize>();
+    if total == 0 {
+        return weights[0].0;
+    }
+
+    let mut target = sample % total;
+    for (intent, weight) in weights {
+        if target < *weight {
+            return *intent;
+        }
+        target -= *weight;
+    }
+
+    weights[0].0
+}
+
+fn style_profile_for(persona: &Persona) -> StyleProfile {
+    let detail_signal =
+        (persona.technical_depth + persona.conscientiousness + persona.agreeableness) / 3.0;
+    let detail_bias = ((detail_signal * 68.0) + (persona.posting_frequency * 14.0)) as usize;
+    let abbreviation_bias = ((1.0 - persona.conscientiousness) * 72.0) as usize;
+    let humor_bias = ((persona.humor_affinity + persona.meme_affinity) * 54.0) as usize;
+    let sarcasm_bias = ((persona.controversy_affinity
+        + persona.neuroticism
+        + if matches!(persona.activity_pattern, ActivityPattern::Lurker) {
+            0.25
+        } else {
+            0.0
+        })
+        * 45.0) as usize;
+    let typo_bias = ((1.0 - persona.conscientiousness) * 26.0) as usize;
+    let emoji_bias =
+        ((persona.humor_affinity * 40.0 + persona.meme_affinity * 32.0) * 0.9) as usize;
+    let question_bias = matches!(
+        persona.activity_pattern,
+        ActivityPattern::Regular | ActivityPattern::PowerUser
+    ) || matches!(persona.verbosity, Verbosity::Terse | Verbosity::Balanced);
+
+    StyleProfile {
+        verbosity: persona.verbosity,
+        detail_bias: detail_bias.min(100),
+        abbreviation_bias: abbreviation_bias.min(100),
+        humor_bias: humor_bias.min(100),
+        sarcasm_bias: sarcasm_bias.min(100),
+        typo_bias: typo_bias.min(100),
+        emoji_bias: emoji_bias.min(100),
+        question_bias,
+    }
+}
+
+fn apply_style_pipeline(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    persona: &Persona,
+    draft: &LanguageDraft,
+    rendered: String,
+) -> String {
+    let profile = style_profile_for(persona);
+    let mut text = apply_verbosity_profile(config, namespace, entity_id, &profile, draft, rendered);
+    if !matches!(profile.verbosity, Verbosity::Terse) {
+        text = apply_structural_variants(config, namespace, entity_id, &profile, draft, text);
+        text = apply_synonym_mutation(config, namespace, entity_id, &draft.kind, text);
+    }
+    text = normalize_punctuation_and_cadence(config, namespace, entity_id, &profile, draft, text);
+    text = apply_abbreviation_variants(config, namespace, entity_id, draft, &profile, text);
+    text = apply_style_tone_helpers(config, namespace, entity_id, draft, &profile, text);
+    text = apply_humor_and_sarcasm_variants(config, namespace, entity_id, draft, &profile, text);
+    text = apply_typos_and_emoji(config, namespace, entity_id, &profile, draft, text);
+
+    text
+}
+
+fn apply_verbosity_profile(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    profile: &StyleProfile,
+    _draft: &LanguageDraft,
+    rendered: String,
+) -> String {
+    match profile.verbosity {
+        Verbosity::Terse => {
+            let compact = choose(
+                config,
+                namespace,
+                entity_id,
+                "compact_prefix",
+                &["", "In short:", "TL;DR:", "Quickly:"],
+            );
+            if compact.is_empty() {
+                rendered
+            } else {
+                format!("{compact} {rendered}")
+            }
+        }
+        Verbosity::Balanced => rendered,
+        Verbosity::Detailed => {
+            let detail = choose(
+                config,
+                namespace,
+                entity_id,
+                "detail_append",
+                &[
+                    "I can follow with a concrete check list next.",
+                    "From a reproducible standpoint, a small pilot is the safest next step.",
+                    "The next move is to verify tradeoffs and publish a practical sequence.",
+                ],
+            );
+            format!("{rendered} {detail}")
+        }
+    }
+}
+
+fn apply_structural_variants(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    profile: &StyleProfile,
+    _draft: &LanguageDraft,
+    mut text: String,
+) -> String {
+    let opener = choose(
+        config,
+        namespace,
+        entity_id,
+        "opener",
+        if profile.detail_bias >= 55 {
+            OPENER_TEMPLATES
+        } else {
+            &OPENER_TEMPLATES[1..]
+        },
+    );
+    if !opener.is_empty() {
+        text = format!("{opener} {text}");
+    }
+
+    let rewrite = choose(
+        config,
+        namespace,
+        entity_id,
+        "structural_rewrite",
+        STRUCTURAL_REWRITES,
+    );
+    let connector = choose(
+        config,
+        namespace,
+        entity_id,
+        "connector",
+        &["so", "therefore", "that said", "for context"],
+    );
+    text = rewrite
+        .replace("{body}", &text)
+        .replace("{connector}", connector);
+
+    let closer = choose(config, namespace, entity_id, "closer", CLOSER_TEMPLATES);
+    if !closer.is_empty() {
+        text = format!("{text} {closer}");
+    }
+
+    text
+}
+
+fn normalize_punctuation_and_cadence(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    profile: &StyleProfile,
+    draft: &LanguageDraft,
+    rendered: String,
+) -> String {
+    let mut text = rendered.trim().to_string();
+    let cadence = deterministic_index(config, namespace, entity_id, "cadence", 6);
+    let base = if matches!(
+        draft.intent,
+        SemanticIntent::Question | SemanticIntent::Clarification
+    ) || profile.question_bias
+    {
+        '?'
+    } else {
+        match cadence {
+            0 => '.',
+            1 => '.',
+            2 => '.',
+            3 => '!',
+            _ => '.',
+        }
+    };
+
+    while matches!(text.chars().last(), Some('.' | '!' | '?')) {
+        text.pop();
+    }
+    text.push(base);
+
+    text
+}
+
+fn apply_abbreviation_variants(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    _draft: &LanguageDraft,
+    profile: &StyleProfile,
+    mut rendered: String,
+) -> String {
+    let count = (profile.abbreviation_bias / 45).min(2);
+    for slot in 0..count {
+        let source_field = format!("abbr_source_{slot}");
+        let index = deterministic_index(
+            config,
+            namespace,
+            entity_id,
+            source_field.as_str(),
+            ABBREVIATION_PAIRS.len(),
+        );
+        let (source, replacement) = ABBREVIATION_PAIRS[index];
+        let replaced = replace_word(&rendered, source, replacement);
+        if replaced != rendered {
+            rendered = replaced;
+        }
+    }
+
+    rendered
+}
+
+fn apply_style_tone_helpers(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    draft: &LanguageDraft,
+    profile: &StyleProfile,
+    mut rendered: String,
+) -> String {
+    if profile.detail_bias > 60 {
+        rendered = match draft.intent {
+            SemanticIntent::Agreement => {
+                rendered
+                    + " "
+                    + choose(
+                        config,
+                        namespace,
+                        entity_id,
+                        "agreement",
+                        AGREEMENT_VARIANTS,
+                    )
+            }
+            SemanticIntent::TechnicalAdvice => {
+                rendered + " " + choose(config, namespace, entity_id, "advice", ADVICE_VARIANTS)
+            }
+            SemanticIntent::Frustration | SemanticIntent::Disagreement => {
+                rendered + " " + choose(config, namespace, entity_id, "concern", CONCERN_VARIANTS)
+            }
+            _ => rendered,
+        };
+    }
+
+    rendered
+}
+
+fn apply_humor_and_sarcasm_variants(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    draft: &LanguageDraft,
+    profile: &StyleProfile,
+    mut rendered: String,
+) -> String {
+    if profile.humor_bias > 45
+        && matches!(
+            draft.intent,
+            SemanticIntent::Humor | SemanticIntent::Excitement
+        )
+    {
+        rendered = format!(
+            "{rendered} {}",
+            choose(config, namespace, entity_id, "humor", HUMOR_VARIANTS)
+        );
+    }
+
+    if profile.sarcasm_bias > 55
+        && matches!(
+            draft.intent,
+            SemanticIntent::Sarcasm | SemanticIntent::Disagreement | SemanticIntent::Frustration,
+        )
+    {
+        rendered = format!(
+            "{rendered} {}",
+            choose(config, namespace, entity_id, "sarcasm", SARCASTIC_VARIANTS)
+        );
+    }
+
+    rendered
+}
+
+fn apply_typos_and_emoji(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    profile: &StyleProfile,
+    _draft: &LanguageDraft,
+    mut rendered: String,
+) -> String {
+    let typo_gate = deterministic_index(config, namespace, entity_id, "typo_gate", 100);
+    if typo_gate < profile.typo_bias {
+        let typo = TYPO_PAIRS
+            [deterministic_index(config, namespace, entity_id, "typo_pick", TYPO_PAIRS.len())];
+        let replaced = replace_word(&rendered, typo.0, typo.1);
+        if replaced != rendered {
+            rendered = replaced;
+        }
+    }
+
+    let emoji_gate = deterministic_index(config, namespace, entity_id, "emoji_gate", 100);
+    if emoji_gate < profile.emoji_bias {
+        rendered = format!(
+            "{rendered} {}",
+            choose(
+                config,
+                namespace,
+                entity_id,
+                "emoji",
+                &[":)", ":D", ";)", "*smile*", "<3"],
+            )
+        );
+    }
+
+    rendered
+}
+
+fn apply_synonym_mutation(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    kind: &UtteranceKind,
+    mut rendered: String,
+) -> String {
+    let max_mutations = if matches!(kind, UtteranceKind::Post) {
+        2
+    } else {
+        1
+    };
+    let mut applied = 0usize;
+
+    for slot in 0..max_mutations {
+        let group = SYNONYM_GROUPS[deterministic_index(
+            config,
+            namespace,
+            entity_id,
+            &format!("synonym_group_{slot}"),
+            SYNONYM_GROUPS.len(),
+        )];
+        if group.len() < 2 {
+            continue;
+        }
+        let source = group[deterministic_index(
+            config,
+            namespace,
+            entity_id,
+            &format!("synonym_source_{slot}"),
+            group.len(),
+        )];
+        let replacement = group[deterministic_index(
+            config,
+            namespace,
+            entity_id,
+            &format!("synonym_target_{slot}"),
+            group.len(),
+        )];
+
+        if source == replacement {
+            continue;
+        }
+        let replaced = replace_word(&rendered, source, replacement);
+        if replaced != rendered {
+            rendered = replaced;
+            applied += 1;
+        }
+
+        if applied >= max_mutations {
+            break;
+        }
+    }
+
+    rendered
+}
+
+fn replace_word(value: &str, source: &str, replacement: &str) -> String {
+    let spaced_source = format!(" {} ", source);
+    if let Some(index) = value.find(&spaced_source) {
+        let start = index + 1;
+        let end = start + source.len();
+        let mut output = String::with_capacity(value.len());
+        output.push_str(&value[..index]);
+        output.push(' ');
+        output.push_str(replacement);
+        output.push(' ');
+        output.push_str(&value[end + 1..]);
+        return output;
+    }
+
+    if value.starts_with(source) {
+        return value.replacen(source, replacement, 1);
+    }
+
+    if value.ends_with(source) {
+        return value
+            .strip_suffix(source)
+            .expect("suffix should exist")
+            .to_string()
+            + replacement;
+    }
+
+    value.to_string()
+}
+
+fn topic_contains(topic: &str, tokens: &[&str]) -> usize {
+    let haystack = topic.to_lowercase();
+    tokens
+        .iter()
+        .filter(|token| haystack.contains(**token))
+        .count()
+}
+
+fn topic_for_post_title(post: &Post) -> String {
+    if let Some(title) = post.title.as_deref() {
+        title
+            .split_once(": ")
+            .map(|(_, topic)| topic)
+            .unwrap_or(title)
+            .to_string()
+    } else {
+        post.body.clone()
+    }
+}
+
+fn post_topic_from_title(post: &Post) -> String {
+    topic_for_post_title(post)
 }
 
 fn timestamp_for(namespace: &str, index: usize) -> Result<ModelTimestamp, ModelValidationError> {
@@ -3036,6 +3960,240 @@ output_format: postgres-sql
     }
 
     #[test]
+    fn language_intents_cover_all_required_categories() {
+        let config = forum_config_with("intent-distribution", 160, 800, 800);
+        let dataset = generate_forum_dataset(&config).expect("dataset should build");
+        let mut post_counts = [0usize; 9];
+        let mut comment_counts = [0usize; 9];
+
+        for post in &dataset.posts {
+            let persona = dataset
+                .personas
+                .iter()
+                .find(|persona| persona.user_id == post.author_id)
+                .expect("post author persona should exist");
+            let author = dataset
+                .users
+                .iter()
+                .find(|user| user.id == post.author_id)
+                .expect("post author should exist");
+            let community = dataset
+                .communities
+                .iter()
+                .find(|community| Some(&community.id) == post.community_id.as_ref())
+                .expect("post community should exist");
+            let intent = post_intent_for(
+                &config,
+                post.id.as_str(),
+                &post_topic_from_title(post),
+                &community.name,
+                &author.display_name,
+                persona,
+            );
+
+            post_counts[intent_index(intent)] += 1;
+        }
+
+        for comment in &dataset.comments {
+            let post = dataset
+                .posts
+                .iter()
+                .find(|post| post.id == comment.post_id)
+                .expect("comment should reference a post");
+            let intent = comment_intent_for(
+                &config,
+                comment.id.as_str(),
+                post,
+                "",
+                dataset
+                    .personas
+                    .iter()
+                    .find(|persona| persona.user_id == comment.author_id)
+                    .expect("comment author persona should exist"),
+            );
+
+            comment_counts[intent_index(intent)] += 1;
+        }
+
+        assert!(post_counts.iter().all(|count| *count > 0));
+        assert!(comment_counts.iter().all(|count| *count > 0));
+    }
+
+    #[test]
+    fn technical_depth_bias_increases_technical_advice_for_posts() {
+        let config = small_forum_config();
+        let mut technical = affinity_persona("tech-intent", SleepPhase::Daytime, 0.80, 0.25, 0.90);
+        technical.technical_depth = 0.98;
+        technical.humor_affinity = 0.08;
+        technical.meme_affinity = 0.05;
+        let mut social = affinity_persona("social-intent", SleepPhase::Daytime, 0.80, 0.40, 0.20);
+        social.technical_depth = 0.12;
+        social.humor_affinity = 0.60;
+        social.meme_affinity = 0.80;
+
+        let topic = "bug triage";
+        let community = "general";
+        let mut tech_advice = 0usize;
+        let mut social_advice = 0usize;
+
+        for index in 0..240 {
+            let id = format!("post-{index:06}");
+            let technical_intent =
+                post_intent_for(&config, &id, topic, community, "Alex", &technical);
+            let social_intent = post_intent_for(&config, &id, topic, community, "Alex", &social);
+
+            if technical_intent == SemanticIntent::TechnicalAdvice {
+                tech_advice += 1;
+            }
+            if social_intent == SemanticIntent::TechnicalAdvice {
+                social_advice += 1;
+            }
+        }
+
+        assert!(tech_advice > social_advice * 2);
+    }
+
+    #[test]
+    fn verbosity_profile_affects_output_length() {
+        let config = small_forum_config();
+        let topic = "bug triage".to_string();
+        let community = "general".to_string();
+        let base = "A concrete rollout sequence for this topic in the team thread.".to_string();
+        let mut persona_template =
+            affinity_persona("verbosity", SleepPhase::Daytime, 0.80, 0.20, 0.80);
+        persona_template.user_id = user_id(9).expect("valid test user");
+        let mut terse = persona_template.clone();
+        terse.verbosity = Verbosity::Terse;
+        let mut balanced = persona_template.clone();
+        balanced.verbosity = Verbosity::Balanced;
+        let mut detailed = persona_template;
+        detailed.verbosity = Verbosity::Detailed;
+
+        let mut terse_lengths = Vec::new();
+        let mut balanced_lengths = Vec::new();
+        let mut detailed_lengths = Vec::new();
+
+        for slot in 0..20 {
+            let draft = LanguageDraft {
+                intent: SemanticIntent::TechnicalAdvice,
+                kind: UtteranceKind::Post,
+                author_name: "Alex".to_string(),
+                community_name: community.clone(),
+                topic: topic.clone(),
+                referenced_post_title: None,
+                referenced_post_topic: None,
+            };
+            terse_lengths.push(
+                apply_style_pipeline(
+                    &config,
+                    "style-length",
+                    &format!("terse-{slot}"),
+                    &terse,
+                    &draft,
+                    base.clone(),
+                )
+                .len(),
+            );
+            balanced_lengths.push(
+                apply_style_pipeline(
+                    &config,
+                    "style-length",
+                    &format!("balanced-{slot}"),
+                    &balanced,
+                    &draft,
+                    base.clone(),
+                )
+                .len(),
+            );
+            detailed_lengths.push(
+                apply_style_pipeline(
+                    &config,
+                    "style-length",
+                    &format!("detailed-{slot}"),
+                    &detailed,
+                    &draft,
+                    base.clone(),
+                )
+                .len(),
+            );
+        }
+
+        let terse_avg =
+            terse_lengths.iter().copied().sum::<usize>() as f64 / terse_lengths.len() as f64;
+        let balanced_avg =
+            balanced_lengths.iter().copied().sum::<usize>() as f64 / balanced_lengths.len() as f64;
+        let detailed_avg =
+            detailed_lengths.iter().copied().sum::<usize>() as f64 / detailed_lengths.len() as f64;
+
+        assert!(terse_avg < balanced_avg);
+        assert!(detailed_avg > balanced_avg);
+    }
+
+    #[test]
+    fn generated_content_maintains_bounded_duplicate_rates() {
+        let config = ForumScenarioConfig {
+            seed: "duplicate-smoke".to_string(),
+            population: PopulationConfig { users: 180 },
+            communities: vec![
+                "general".to_string(),
+                "support".to_string(),
+                "programming".to_string(),
+                "gaming".to_string(),
+            ],
+            content: ContentConfig {
+                posts: 1_000,
+                comments: 1_000,
+            },
+            output_format: OutputFormat::Jsonl,
+        };
+        let dataset = generate_forum_dataset(&config).expect("dataset should build");
+        let post_bodies = dataset
+            .posts
+            .iter()
+            .map(|post| post.body.clone())
+            .collect::<Vec<_>>();
+        let comment_bodies = dataset
+            .comments
+            .iter()
+            .map(|comment| comment.body.clone())
+            .collect::<Vec<_>>();
+
+        assert!(duplicate_rate(&post_bodies) < 0.22);
+        assert!(duplicate_rate(&comment_bodies) < 0.22);
+        assert!(normalized_duplicate_rate(&post_bodies) < 0.12);
+        assert!(normalized_duplicate_rate(&comment_bodies) < 0.12);
+    }
+
+    #[test]
+    #[ignore = "large corpus duplicate smoke test"]
+    fn generated_comments_maintain_low_duplicate_rate_at_100k() {
+        let config = ForumScenarioConfig {
+            seed: "duplicate-smoke-100k".to_string(),
+            population: PopulationConfig { users: 400 },
+            communities: vec![
+                "general".to_string(),
+                "support".to_string(),
+                "programming".to_string(),
+                "gaming".to_string(),
+                "linux".to_string(),
+            ],
+            content: ContentConfig {
+                posts: 2_000,
+                comments: 100_000,
+            },
+            output_format: OutputFormat::Jsonl,
+        };
+        let dataset = generate_forum_dataset(&config).expect("dataset should build");
+        let comment_bodies = dataset
+            .comments
+            .iter()
+            .map(|comment| comment.body.clone())
+            .collect::<Vec<_>>();
+
+        assert!(normalized_duplicate_rate(&comment_bodies) < 0.10);
+    }
+
+    #[test]
     fn activity_schedule_hourly_distribution_is_not_uniform() {
         let dataset =
             generate_forum_dataset(&forum_config_with("activity-hour-histogram", 400, 2_000, 1))
@@ -3127,16 +4285,12 @@ output_format: postgres-sql
             Some("community-000001-general")
         );
         assert_eq!(dataset.posts[0].title.as_deref(), Some("general: Roadmap"));
-        assert_eq!(
-            dataset.posts[0].body,
-            "Harper Gray started a thread about roadmap in general."
-        );
+        assert!(!dataset.posts[0].body.trim().is_empty());
+        assert!(!dataset.posts[0].body.chars().all(char::is_whitespace));
         assert_eq!(dataset.comments[0].id.as_str(), "comment-000001");
         assert_eq!(dataset.comments[0].post_id.as_str(), "post-000005");
-        assert_eq!(
-            dataset.comments[0].body,
-            "I would document the tradeoff before changing it."
-        );
+        assert!(!dataset.comments[0].body.trim().is_empty());
+        assert!(!dataset.comments[0].body.chars().all(char::is_whitespace));
         assert_eq!(dataset.personas[0].id.as_str(), "persona-000001");
         assert_eq!(dataset.personas[0].user_id, dataset.users[0].id);
         assert!((0.0..=1.0).contains(&dataset.personas[0].technical_depth));
@@ -4229,5 +5383,74 @@ output_format: postgres-sql
         persona.meme_affinity = meme_affinity;
         persona.humor_affinity = humor_affinity;
         persona
+    }
+
+    fn intent_index(intent: SemanticIntent) -> usize {
+        match intent {
+            SemanticIntent::Frustration => 0,
+            SemanticIntent::Excitement => 1,
+            SemanticIntent::TechnicalAdvice => 2,
+            SemanticIntent::Agreement => 3,
+            SemanticIntent::Disagreement => 4,
+            SemanticIntent::Question => 5,
+            SemanticIntent::Clarification => 6,
+            SemanticIntent::Humor => 7,
+            SemanticIntent::Sarcasm => 8,
+        }
+    }
+
+    fn duplicate_rate(values: &[String]) -> f64 {
+        if values.len() <= 1 {
+            return 0.0;
+        }
+
+        let mut unique = HashSet::new();
+        let mut repeated = 0usize;
+
+        for value in values {
+            if !unique.insert(value.as_str()) {
+                repeated += 1;
+            }
+        }
+
+        repeated as f64 / values.len() as f64
+    }
+
+    fn normalized_duplicate_rate(values: &[String]) -> f64 {
+        let normalized = values
+            .iter()
+            .map(|value| normalize_for_duplicate(value))
+            .collect::<Vec<_>>();
+        duplicate_rate(&normalized)
+    }
+
+    fn normalize_for_duplicate(value: &str) -> String {
+        let mut normalized = String::with_capacity(value.len());
+        let mut space_pending = false;
+
+        for ch in value.to_lowercase().chars() {
+            if ch.is_ascii_alphanumeric() {
+                if space_pending && !normalized.is_empty() {
+                    normalized.push(' ');
+                    space_pending = false;
+                }
+                normalized.push(ch);
+                continue;
+            }
+
+            if ch.is_whitespace() || ch.is_ascii_punctuation() {
+                space_pending = true;
+                continue;
+            }
+
+            // Strip emoji and other symbols to keep normalized metrics stable.
+            space_pending = true;
+        }
+
+        while normalized.ends_with(' ') {
+            normalized.pop();
+        }
+
+        normalized
     }
 }
