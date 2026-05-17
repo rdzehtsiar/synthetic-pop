@@ -23,4 +23,3 @@ mod tests {
         assert!(!policy_generation_enabled());
     }
 }
-
