@@ -699,6 +699,38 @@ mod tests {
     }
 
     #[test]
+    fn social_relationship_kinds_and_user_endpoints_roundtrip() {
+        let timestamp = ModelTimestamp::new("2026-05-12T18:30:00Z").expect("valid");
+        let first_user = UserId::new("user-000001").expect("valid");
+        let second_user = UserId::new("user-000002").expect("valid");
+        let follows = Relationship {
+            id: RelationshipId::new("relationship-000001").expect("valid"),
+            source: RelationshipEndpoint::User(first_user.clone()),
+            target: RelationshipEndpoint::User(second_user.clone()),
+            kind: RelationshipKind::Follows,
+            created_at: timestamp.clone(),
+        };
+        let friend = Relationship {
+            id: RelationshipId::new("relationship-000002").expect("valid"),
+            source: RelationshipEndpoint::User(first_user),
+            target: RelationshipEndpoint::User(second_user),
+            kind: RelationshipKind::Friend,
+            created_at: timestamp,
+        };
+
+        assert_eq!(
+            serde_json::to_string(&RelationshipKind::Follows).expect("kind should serialize"),
+            "\"follows\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RelationshipKind::Friend).expect("kind should serialize"),
+            "\"friend\""
+        );
+        assert_json_roundtrip(&follows);
+        assert_json_roundtrip(&friend);
+    }
+
+    #[test]
     fn all_primitive_types_accept_non_empty_values() {
         UserId::new("user-1").expect("valid");
         ProfileId::new("profile-1").expect("valid");

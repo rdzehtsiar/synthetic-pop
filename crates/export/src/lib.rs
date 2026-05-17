@@ -1162,6 +1162,53 @@ mod tests {
         }
     }
 
+    fn sample_dataset_with_social_relationships() -> ForumDataset {
+        let mut dataset = sample_dataset();
+        let timestamp = timestamp();
+        let second_user_id = UserId::new("user-000002").expect("user ID should be valid");
+        let third_user_id = UserId::new("user-000003").expect("user ID should be valid");
+        let first_user_id = dataset.users[0].id.clone();
+
+        dataset.users.push(
+            User::new(
+                second_user_id.clone(),
+                "blair",
+                "Blair Morgan",
+                Locale::new("en-GB").expect("locale should be valid"),
+                timestamp.clone(),
+            )
+            .expect("user should be valid"),
+        );
+        dataset.users.push(
+            User::new(
+                third_user_id.clone(),
+                "casey",
+                "Casey Morgan",
+                Locale::new("en-CA").expect("locale should be valid"),
+                timestamp.clone(),
+            )
+            .expect("user should be valid"),
+        );
+        dataset.relationships.push(Relationship {
+            id: RelationshipId::new("relationship-000002")
+                .expect("relationship ID should be valid"),
+            source: RelationshipEndpoint::User(first_user_id.clone()),
+            target: RelationshipEndpoint::User(second_user_id),
+            kind: RelationshipKind::Follows,
+            created_at: timestamp.clone(),
+        });
+        dataset.relationships.push(Relationship {
+            id: RelationshipId::new("relationship-000003")
+                .expect("relationship ID should be valid"),
+            source: RelationshipEndpoint::User(first_user_id),
+            target: RelationshipEndpoint::User(third_user_id),
+            kind: RelationshipKind::Friend,
+            created_at: timestamp,
+        });
+
+        dataset
+    }
+
     #[test]
     fn export_is_claimed_as_implemented() {
         assert_eq!(current_export_state(), ExportState::Implemented);
@@ -1183,6 +1230,31 @@ mod tests {
         assert!(jsonl.contains("\"type\":\"interest\""));
         assert!(jsonl.contains("\"type\":\"activity_event\""));
         assert_eq!(jsonl.lines().count(), 8);
+    }
+
+    #[test]
+    fn all_export_formats_include_social_relationship_kinds() {
+        let dataset = sample_dataset_with_social_relationships();
+
+        for format in [
+            ExportFormat::Json,
+            ExportFormat::Jsonl,
+            ExportFormat::Csv,
+            ExportFormat::SqliteSql,
+            ExportFormat::PostgresSql,
+            ExportFormat::PrismaSeed,
+        ] {
+            let output = export_forum_dataset(&dataset, format).expect("export should succeed");
+
+            assert!(
+                output.contains("follows"),
+                "{format:?} should include follows"
+            );
+            assert!(
+                output.contains("friend"),
+                "{format:?} should include friend"
+            );
+        }
     }
 
     #[test]

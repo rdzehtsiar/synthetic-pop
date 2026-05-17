@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use synthetic_pop_core::{
     random_bounded_u64, ActivityEvent, ActivityEventId, ActivityEventKind, ActivityObject,
     ActivityPattern, Comment, CommentId, Community, CommunityId, Interest, InterestId, Locale,
@@ -136,13 +136,20 @@ pub fn generate_forum_dataset(
     let interests = generate_interests()?;
     assign_user_interests(config, &mut users, &personas, &interests);
     assign_user_bios(config, &mut users, &personas, &interests);
-    let relationships = generate_memberships(
+    let mut relationships = generate_memberships(
         config,
         &mut users,
         &personas,
         &communities,
         &mut activity_events,
     )?;
+    relationships.extend(generate_social_relationships(
+        config,
+        &users,
+        &personas,
+        relationships.len(),
+        &mut activity_events,
+    )?);
     let community_members = community_member_indexes(&users, &communities);
     let community_indexes = community_indexes(&communities);
     let posts = generate_posts(
@@ -246,13 +253,6 @@ const SLEEP_PHASES: [SleepPhase; 4] = [
     SleepPhase::Daytime,
     SleepPhase::NightOwl,
     SleepPhase::Irregular,
-];
-const ACTIVITY_PATTERNS: [ActivityPattern; 5] = [
-    ActivityPattern::Lurker,
-    ActivityPattern::Casual,
-    ActivityPattern::Regular,
-    ActivityPattern::Bursty,
-    ActivityPattern::PowerUser,
 ];
 const INTEREST_CATALOG: [InterestSpec; 15] = [
     InterestSpec::new(
@@ -464,13 +464,7 @@ fn generate_personas(
             let timestamp = timestamp_for("persona", index)?;
             let verbosity = *choose(config, "personas", entity_id, "verbosity", &VERBOSITIES);
             let sleep_phase = *choose(config, "personas", entity_id, "sleep_phase", &SLEEP_PHASES);
-            let activity_pattern = *choose(
-                config,
-                "personas",
-                entity_id,
-                "activity_pattern",
-                &ACTIVITY_PATTERNS,
-            );
+            let activity_pattern = activity_pattern_for(config, entity_id);
             let openness = persona_score(config, entity_id, "openness");
             let extroversion = persona_score(config, entity_id, "extroversion");
             let conscientiousness = persona_score(config, entity_id, "conscientiousness");
@@ -683,6 +677,311 @@ fn generate_memberships(
     }
 
     Ok(relationships)
+}
+
+fn generate_social_relationships(
+    config: &ForumScenarioConfig,
+    users: &[User],
+    personas: &[Persona],
+    relationship_offset: usize,
+    activity_events: &mut Vec<ActivityEvent>,
+) -> Result<Vec<Relationship>, ForumGenerationError> {
+    if users.len() <= 1 {
+        return Ok(Vec::new());
+    }
+
+    let mut relationships = Vec::new();
+    let mut emitted = HashSet::new();
+    let mut friend_pairs = HashSet::new();
+    let active_users = high_activity_user_indexes(personas);
+    let ranked_by_user = users
+        .iter()
+        .enumerate()
+        .map(|(user_index, user)| {
+            ranked_social_candidates(config, users, personas, &active_users, user_index, user)
+        })
+        .collect::<Vec<_>>();
+
+    for (source_index, ranked) in ranked_by_user.iter().enumerate() {
+        let source_user = &users[source_index];
+        let source_persona = &personas[source_index];
+        let friend_limit = friend_limit_for(source_persona).min(ranked.len());
+
+        for candidate in ranked.iter().take(friend_limit) {
+            if candidate.affinity < friendship_threshold(source_persona, &personas[candidate.index])
+            {
+                continue;
+            }
+
+            let target_user = &users[candidate.index];
+            let (source, target) = canonical_user_pair(source_user, target_user);
+            if !friend_pairs.insert((source.to_string(), target.to_string())) {
+                continue;
+            }
+
+            push_social_relationship(
+                &mut relationships,
+                activity_events,
+                relationship_offset,
+                RelationshipKind::Friend,
+                source,
+                target,
+            )?;
+        }
+    }
+
+    for (source_index, ranked) in ranked_by_user.iter().enumerate() {
+        let source_user = &users[source_index];
+        let follow_limit = follow_limit_for(&personas[source_index]).min(ranked.len());
+
+        for candidate in ranked.iter().take(follow_limit) {
+            let target_user = &users[candidate.index];
+            let pair = canonical_user_pair(source_user, target_user);
+            if friend_pairs.contains(&(pair.0.to_string(), pair.1.to_string())) {
+                continue;
+            }
+
+            let key = (
+                RelationshipKind::Follows,
+                source_user.id.to_string(),
+                target_user.id.to_string(),
+            );
+            if !emitted.insert(key) {
+                continue;
+            }
+
+            push_social_relationship(
+                &mut relationships,
+                activity_events,
+                relationship_offset,
+                RelationshipKind::Follows,
+                &source_user.id,
+                &target_user.id,
+            )?;
+        }
+    }
+
+    Ok(relationships)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SocialCandidate {
+    index: usize,
+    affinity: f32,
+    score: f32,
+}
+
+fn ranked_social_candidates(
+    config: &ForumScenarioConfig,
+    users: &[User],
+    personas: &[Persona],
+    active_users: &[usize],
+    source_index: usize,
+    source_user: &User,
+) -> Vec<SocialCandidate> {
+    let candidate_budget = (users.len() - 1).min(32);
+    let mut candidate_indexes = Vec::with_capacity(candidate_budget);
+    let mut seen = HashSet::new();
+
+    for offset in 1..=8.min(users.len() - 1) {
+        push_social_candidate_index(
+            &mut candidate_indexes,
+            &mut seen,
+            candidate_budget,
+            (source_index + offset) % users.len(),
+            source_index,
+        );
+        push_social_candidate_index(
+            &mut candidate_indexes,
+            &mut seen,
+            candidate_budget,
+            (source_index + users.len() - offset) % users.len(),
+            source_index,
+        );
+    }
+
+    for &candidate_index in active_users.iter().take(16) {
+        push_social_candidate_index(
+            &mut candidate_indexes,
+            &mut seen,
+            candidate_budget,
+            candidate_index,
+            source_index,
+        );
+    }
+
+    for random_index in 0..(candidate_budget * 4) {
+        if candidate_indexes.len() >= candidate_budget {
+            break;
+        }
+        let offset = deterministic_social_offset(
+            config,
+            source_user.id.as_str(),
+            "random_candidate",
+            random_index,
+            users.len() - 1,
+        );
+        let candidate_index = if offset >= source_index {
+            offset + 1
+        } else {
+            offset
+        };
+        push_social_candidate_index(
+            &mut candidate_indexes,
+            &mut seen,
+            candidate_budget,
+            candidate_index,
+            source_index,
+        );
+    }
+
+    let source_persona = &personas[source_index];
+    let mut ranked = candidate_indexes
+        .into_iter()
+        .map(|candidate_index| {
+            let target_user = &users[candidate_index];
+            let target_persona = &personas[candidate_index];
+            let affinity = affinity_score(
+                config,
+                source_user,
+                source_persona,
+                target_user,
+                target_persona,
+            );
+            let tie_breaker = directed_social_tie_breaker(
+                config,
+                source_user.id.as_str(),
+                target_user.id.as_str(),
+            );
+            SocialCandidate {
+                index: candidate_index,
+                affinity,
+                score: affinity * 0.70
+                    + author_activity_score(target_persona) * 0.20
+                    + tie_breaker * 0.10,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    ranked.sort_by(|left, right| {
+        right.score.total_cmp(&left.score).then_with(|| {
+            users[left.index]
+                .id
+                .as_str()
+                .cmp(users[right.index].id.as_str())
+        })
+    });
+    ranked
+}
+
+fn push_social_candidate_index(
+    candidates: &mut Vec<usize>,
+    seen: &mut HashSet<usize>,
+    candidate_budget: usize,
+    candidate_index: usize,
+    source_index: usize,
+) {
+    if candidates.len() < candidate_budget
+        && candidate_index != source_index
+        && seen.insert(candidate_index)
+    {
+        candidates.push(candidate_index);
+    }
+}
+
+fn high_activity_user_indexes(personas: &[Persona]) -> Vec<usize> {
+    let mut indexes = (0..personas.len()).collect::<Vec<_>>();
+    indexes.sort_by(|left, right| {
+        author_activity_score(&personas[*right])
+            .total_cmp(&author_activity_score(&personas[*left]))
+            .then_with(|| {
+                personas[*left]
+                    .user_id
+                    .as_str()
+                    .cmp(personas[*right].user_id.as_str())
+            })
+    });
+    indexes
+}
+
+fn deterministic_social_offset(
+    config: &ForumScenarioConfig,
+    source_id: &str,
+    field: &str,
+    index: usize,
+    len: usize,
+) -> usize {
+    let upper_bound = u64::try_from(len).expect("scenario count should fit in u64");
+    let value = random_bounded_u64(
+        &config.seed,
+        "social_relationships",
+        source_id,
+        format!("{field}_{index}"),
+        upper_bound,
+    )
+    .expect("non-zero social candidate bound should produce a value");
+
+    usize::try_from(value).expect("bounded random index should fit in usize")
+}
+
+fn follow_limit_for(persona: &Persona) -> usize {
+    match persona.activity_pattern {
+        ActivityPattern::Lurker => 1,
+        ActivityPattern::Casual => 2,
+        ActivityPattern::Regular => 4,
+        ActivityPattern::Bursty => 6,
+        ActivityPattern::PowerUser => 8,
+    }
+}
+
+fn friend_limit_for(persona: &Persona) -> usize {
+    match persona.activity_pattern {
+        ActivityPattern::Lurker | ActivityPattern::Casual => 1,
+        ActivityPattern::Regular | ActivityPattern::Bursty => 2,
+        ActivityPattern::PowerUser => 3,
+    }
+}
+
+fn friendship_threshold(source: &Persona, target: &Persona) -> f32 {
+    let sociability = (source.extroversion + target.extroversion) / 2.0;
+    0.74 - sociability * 0.08
+}
+
+fn canonical_user_pair<'a>(left: &'a User, right: &'a User) -> (&'a UserId, &'a UserId) {
+    if left.id.as_str() <= right.id.as_str() {
+        (&left.id, &right.id)
+    } else {
+        (&right.id, &left.id)
+    }
+}
+
+fn push_social_relationship(
+    relationships: &mut Vec<Relationship>,
+    activity_events: &mut Vec<ActivityEvent>,
+    relationship_offset: usize,
+    kind: RelationshipKind,
+    source_id: &UserId,
+    target_id: &UserId,
+) -> Result<(), ForumGenerationError> {
+    let relationship_index = relationship_offset + relationships.len();
+    let relationship_id =
+        RelationshipId::new(format!("relationship-{:06}", relationship_index + 1))?;
+    let timestamp = timestamp_for("social_relationship", relationship_index)?;
+
+    relationships.push(Relationship {
+        id: relationship_id.clone(),
+        source: RelationshipEndpoint::User(source_id.clone()),
+        target: RelationshipEndpoint::User(target_id.clone()),
+        kind,
+        created_at: timestamp.clone(),
+    });
+    push_activity(
+        activity_events,
+        ActivityEventKind::RelationshipCreated,
+        Some(source_id.clone()),
+        ActivityObject::Relationship(relationship_id),
+        timestamp,
+    )
 }
 
 fn choose_primary_community(
@@ -971,6 +1270,128 @@ fn author_tie_breaker(
     (value as f32) / 1_000_000.0
 }
 
+fn affinity_score(
+    config: &ForumScenarioConfig,
+    left_user: &User,
+    left_persona: &Persona,
+    right_user: &User,
+    right_persona: &Persona,
+) -> f32 {
+    let score = shared_interest_score(left_user, right_user) * 0.40
+        + personality_compatibility(left_persona, right_persona) * 0.25
+        + locale_similarity(&left_user.locale, &right_user.locale) * 0.15
+        + activity_overlap(left_persona, right_persona) * 0.15
+        + affinity_tie_breaker(config, left_user.id.as_str(), right_user.id.as_str()) * 0.05;
+
+    score.clamp(0.0, 1.0)
+}
+
+fn shared_interest_score(left: &User, right: &User) -> f32 {
+    let shared = left
+        .interest_ids
+        .iter()
+        .filter(|interest_id| right.interest_ids.contains(interest_id))
+        .count();
+    let union = left.interest_ids.len() + right.interest_ids.len() - shared;
+
+    if union == 0 {
+        0.0
+    } else {
+        shared as f32 / union as f32
+    }
+}
+
+fn personality_compatibility(left: &Persona, right: &Persona) -> f32 {
+    let similarity = [
+        (left.openness, right.openness),
+        (left.extroversion, right.extroversion),
+        (left.conscientiousness, right.conscientiousness),
+        (left.agreeableness, right.agreeableness),
+        (left.neuroticism, right.neuroticism),
+        (left.technical_depth, right.technical_depth),
+        (left.humor_affinity, right.humor_affinity),
+        (left.meme_affinity, right.meme_affinity),
+    ]
+    .into_iter()
+    .map(|(left, right)| 1.0 - (left - right).abs())
+    .sum::<f32>()
+        / 8.0;
+
+    let controversy = (left.controversy_affinity + right.controversy_affinity) / 2.0;
+    let agreeableness = (left.agreeableness + right.agreeableness) / 2.0;
+    let conflict_penalty = if controversy >= 0.70 && agreeableness <= 0.35 {
+        0.25
+    } else if controversy >= 0.62 && agreeableness <= 0.45 {
+        0.12
+    } else {
+        0.0
+    };
+
+    (similarity - conflict_penalty).clamp(0.0, 1.0)
+}
+
+fn locale_similarity(left: &Locale, right: &Locale) -> f32 {
+    if left == right {
+        return 1.0;
+    }
+
+    match (
+        left.as_str().split_once('-'),
+        right.as_str().split_once('-'),
+    ) {
+        (Some((left_language, _)), Some((right_language, _)))
+            if left_language == right_language =>
+        {
+            0.70
+        }
+        _ => 0.0,
+    }
+}
+
+fn activity_overlap(left: &Persona, right: &Persona) -> f32 {
+    let sleep = match (left.sleep_phase, right.sleep_phase) {
+        (left, right) if left == right => 1.0,
+        (SleepPhase::Irregular, _) | (_, SleepPhase::Irregular) => 0.60,
+        (SleepPhase::EarlyBird, SleepPhase::Daytime)
+        | (SleepPhase::Daytime, SleepPhase::EarlyBird)
+        | (SleepPhase::Daytime, SleepPhase::NightOwl)
+        | (SleepPhase::NightOwl, SleepPhase::Daytime) => 0.65,
+        _ => 0.20,
+    };
+    let cadence = 1.0 - (left.posting_frequency - right.posting_frequency).abs();
+
+    (sleep * 0.70 + cadence * 0.30).clamp(0.0, 1.0)
+}
+
+fn affinity_tie_breaker(config: &ForumScenarioConfig, left_id: &str, right_id: &str) -> f32 {
+    let (first, second) = if left_id <= right_id {
+        (left_id, right_id)
+    } else {
+        (right_id, left_id)
+    };
+    let value = random_bounded_u64(&config.seed, "affinity", first, second, 1_000)
+        .expect("non-zero affinity tie-breaker bound should produce a value");
+
+    (value as f32) / 999.0
+}
+
+fn directed_social_tie_breaker(
+    config: &ForumScenarioConfig,
+    source_id: &str,
+    target_id: &str,
+) -> f32 {
+    let value = random_bounded_u64(
+        &config.seed,
+        "social_relationships",
+        source_id,
+        target_id,
+        1_000,
+    )
+    .expect("non-zero directed tie-breaker bound should produce a value");
+
+    (value as f32) / 999.0
+}
+
 fn community_member_indexes(users: &[User], communities: &[Community]) -> Vec<Vec<usize>> {
     communities
         .iter()
@@ -1038,6 +1459,25 @@ fn persona_score(config: &ForumScenarioConfig, entity_id: &str, field: &str) -> 
         .expect("non-zero persona score bound should produce a value");
 
     (value as f32) / 1_000.0
+}
+
+fn activity_pattern_for(config: &ForumScenarioConfig, persona_id: &str) -> ActivityPattern {
+    let value = random_bounded_u64(
+        &config.seed,
+        "personas",
+        persona_id,
+        "activity_pattern",
+        10_000,
+    )
+    .expect("non-zero activity-pattern bound should produce a value");
+
+    match value {
+        0..=4_499 => ActivityPattern::Lurker,
+        4_500..=7_499 => ActivityPattern::Casual,
+        7_500..=9_199 => ActivityPattern::Regular,
+        9_200..=9_799 => ActivityPattern::Bursty,
+        _ => ActivityPattern::PowerUser,
+    }
 }
 
 fn persona_interest_score(persona: &Persona, spec: &InterestSpec) -> f32 {
@@ -1698,27 +2138,50 @@ output_format: postgres-sql
         let dataset = generate_forum_dataset(&small_forum_config()).expect("dataset should build");
 
         for relationship in &dataset.relationships {
-            let RelationshipEndpoint::User(user_id) = &relationship.source else {
-                panic!("membership source should be a user");
-            };
-            let RelationshipEndpoint::Community(community_id) = &relationship.target else {
-                panic!("membership target should be a community");
-            };
-            let user = dataset
-                .users
-                .iter()
-                .find(|candidate| &candidate.id == user_id)
-                .expect("relationship user should exist");
+            match relationship.kind {
+                RelationshipKind::MemberOf => {
+                    let RelationshipEndpoint::User(user_id) = &relationship.source else {
+                        panic!("membership source should be a user");
+                    };
+                    let RelationshipEndpoint::Community(community_id) = &relationship.target else {
+                        panic!("membership target should be a community");
+                    };
+                    let user = dataset
+                        .users
+                        .iter()
+                        .find(|candidate| &candidate.id == user_id)
+                        .expect("relationship user should exist");
 
-            assert!(user.community_ids.contains(community_id));
-            assert!(dataset
-                .communities
-                .iter()
-                .any(|community| &community.id == community_id));
-            assert!(dataset.activity_events.iter().any(|event| {
-                event.actor_id.as_ref() == Some(user_id)
-                    && event.object == ActivityObject::Relationship(relationship.id.clone())
-            }));
+                    assert!(user.community_ids.contains(community_id));
+                    assert!(dataset
+                        .communities
+                        .iter()
+                        .any(|community| &community.id == community_id));
+                    assert!(dataset.activity_events.iter().any(|event| {
+                        event.actor_id.as_ref() == Some(user_id)
+                            && event.object == ActivityObject::Relationship(relationship.id.clone())
+                    }));
+                }
+                RelationshipKind::Follows | RelationshipKind::Friend => {
+                    let RelationshipEndpoint::User(source_id) = &relationship.source else {
+                        panic!("social relationship source should be a user");
+                    };
+                    let RelationshipEndpoint::User(target_id) = &relationship.target else {
+                        panic!("social relationship target should be a user");
+                    };
+
+                    assert_ne!(source_id, target_id);
+                    assert!(dataset.users.iter().any(|user| &user.id == source_id));
+                    assert!(dataset.users.iter().any(|user| &user.id == target_id));
+                    assert!(dataset.activity_events.iter().any(|event| {
+                        event.actor_id.as_ref() == Some(source_id)
+                            && event.object == ActivityObject::Relationship(relationship.id.clone())
+                    }));
+                }
+                RelationshipKind::Blocks | RelationshipKind::WorksAt => {
+                    panic!("forum generation should not emit {:?}", relationship.kind);
+                }
+            }
         }
 
         for post in &dataset.posts {
@@ -1969,6 +2432,263 @@ output_format: postgres-sql
         );
     }
 
+    #[test]
+    fn affinity_scores_are_bounded_deterministic_and_order_independent() {
+        let config = small_forum_config();
+        let left = test_user(
+            "user-left",
+            "en-US",
+            &["interest-programming", "interest-linux"],
+        );
+        let right = test_user(
+            "user-right",
+            "en-GB",
+            &["interest-programming", "interest-gaming"],
+        );
+        let left_persona = affinity_persona("persona-left", SleepPhase::Daytime, 0.45, 0.10, 0.75);
+        let right_persona =
+            affinity_persona("persona-right", SleepPhase::Daytime, 0.50, 0.12, 0.70);
+
+        let score = affinity_score(&config, &left, &left_persona, &right, &right_persona);
+        let reverse = affinity_score(&config, &right, &right_persona, &left, &left_persona);
+
+        assert!((0.0..=1.0).contains(&score));
+        assert_eq!(score, reverse);
+        assert_eq!(
+            score,
+            affinity_score(&config, &left, &left_persona, &right, &right_persona)
+        );
+    }
+
+    #[test]
+    fn affinity_components_track_interests_locale_personality_and_activity() {
+        let technical = test_user(
+            "user-technical",
+            "en-US",
+            &["interest-programming", "interest-linux", "interest-tools"],
+        );
+        let similar = test_user(
+            "user-similar",
+            "en-CA",
+            &["interest-programming", "interest-linux", "interest-gaming"],
+        );
+        let distant = test_user(
+            "user-distant",
+            "fr-FR",
+            &["interest-photography", "interest-memes"],
+        );
+        let calm_daytime = affinity_persona("persona-calm", SleepPhase::Daytime, 0.40, 0.05, 0.80);
+        let similar_daytime =
+            affinity_persona("persona-similar", SleepPhase::Daytime, 0.42, 0.08, 0.78);
+        let combative_night =
+            affinity_persona("persona-combative", SleepPhase::NightOwl, 0.95, 0.90, 0.10);
+
+        assert!(
+            shared_interest_score(&technical, &similar)
+                > shared_interest_score(&technical, &distant)
+        );
+        assert_eq!(locale_similarity(&technical.locale, &technical.locale), 1.0);
+        assert!(
+            locale_similarity(&technical.locale, &similar.locale)
+                > locale_similarity(&technical.locale, &distant.locale)
+        );
+        assert!(
+            personality_compatibility(&calm_daytime, &similar_daytime)
+                > personality_compatibility(&calm_daytime, &combative_night)
+        );
+        assert!(
+            activity_overlap(&calm_daytime, &similar_daytime)
+                > activity_overlap(&calm_daytime, &combative_night)
+        );
+    }
+
+    #[test]
+    fn social_relationships_are_valid_unique_and_canonical() {
+        let dataset = generate_forum_dataset(&forum_config_with("social-validity", 80, 40, 20))
+            .expect("dataset should build");
+        let mut keys = HashSet::new();
+        let mut friend_pairs = std::collections::BTreeSet::new();
+        let user_ids = dataset
+            .users
+            .iter()
+            .map(|user| user.id.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        for (index, relationship) in dataset.relationships.iter().enumerate() {
+            assert_eq!(
+                relationship.id.as_str(),
+                format!("relationship-{:06}", index + 1)
+            );
+
+            if matches!(
+                relationship.kind,
+                RelationshipKind::Follows | RelationshipKind::Friend
+            ) {
+                let RelationshipEndpoint::User(source_id) = &relationship.source else {
+                    panic!("social source should be a user");
+                };
+                let RelationshipEndpoint::User(target_id) = &relationship.target else {
+                    panic!("social target should be a user");
+                };
+                let source = source_id.to_string();
+                let target = target_id.to_string();
+
+                assert_ne!(source, target);
+                assert!(user_ids.contains(&source));
+                assert!(user_ids.contains(&target));
+                assert!(keys.insert((relationship.kind, source.clone(), target.clone())));
+                if relationship.kind == RelationshipKind::Friend {
+                    assert!(source < target);
+                    friend_pairs.insert((source, target));
+                }
+            }
+        }
+
+        for relationship in &dataset.relationships {
+            if relationship.kind == RelationshipKind::Follows {
+                let RelationshipEndpoint::User(source_id) = &relationship.source else {
+                    unreachable!("checked above");
+                };
+                let RelationshipEndpoint::User(target_id) = &relationship.target else {
+                    unreachable!("checked above");
+                };
+                let pair = if source_id.as_str() <= target_id.as_str() {
+                    (source_id.to_string(), target_id.to_string())
+                } else {
+                    (target_id.to_string(), source_id.to_string())
+                };
+
+                assert!(!friend_pairs.contains(&pair));
+            }
+        }
+    }
+
+    #[test]
+    fn social_relationship_generation_is_deterministic_and_seed_sensitive() {
+        let first = generate_forum_dataset(&forum_config_with("social-seed-a", 64, 20, 10))
+            .expect("first dataset should build");
+        let second = generate_forum_dataset(&forum_config_with("social-seed-a", 64, 20, 10))
+            .expect("second dataset should build");
+        let third = generate_forum_dataset(&forum_config_with("social-seed-b", 64, 20, 10))
+            .expect("third dataset should build");
+
+        assert_eq!(social_triples(&first), social_triples(&second));
+        assert_ne!(social_triples(&first), social_triples(&third));
+    }
+
+    #[test]
+    fn social_relationship_generation_handles_tiny_populations() {
+        let single = generate_forum_dataset(&forum_config_with("single-social", 1, 1, 1))
+            .expect("single-user dataset should build");
+        let pair = generate_forum_dataset(&forum_config_with("pair-social", 2, 1, 1))
+            .expect("two-user dataset should build");
+
+        assert!(social_relationships(&single).is_empty());
+        assert!((1..=2).contains(&social_relationships(&pair).len()));
+        for relationship in social_relationships(&pair) {
+            let RelationshipEndpoint::User(source_id) = &relationship.source else {
+                panic!("social source should be a user");
+            };
+            let RelationshipEndpoint::User(target_id) = &relationship.target else {
+                panic!("social target should be a user");
+            };
+            assert_ne!(source_id, target_id);
+        }
+    }
+
+    #[test]
+    fn activity_patterns_follow_realistic_weighted_distribution() {
+        let config = forum_config_with("activity-distribution", 10_000, 1, 1);
+        let mut counts = HashMap::new();
+
+        for index in 0..10_000 {
+            let id = format!("persona-{:06}", index + 1);
+            *counts
+                .entry(activity_pattern_for(&config, &id))
+                .or_insert(0usize) += 1;
+        }
+
+        assert_count_near(&counts, ActivityPattern::Lurker, 4_500, 500);
+        assert_count_near(&counts, ActivityPattern::Casual, 3_000, 400);
+        assert_count_near(&counts, ActivityPattern::Regular, 1_700, 300);
+        assert_count_near(&counts, ActivityPattern::Bursty, 600, 180);
+        assert_count_near(&counts, ActivityPattern::PowerUser, 200, 100);
+    }
+
+    #[test]
+    fn authored_content_is_skewed_toward_more_active_roles() {
+        let dataset = generate_forum_dataset(&forum_config_with("author-skew", 2_000, 2_000, 1))
+            .expect("dataset should build");
+        let pattern_by_user = dataset
+            .personas
+            .iter()
+            .map(|persona| (persona.user_id.clone(), persona.activity_pattern))
+            .collect::<HashMap<_, _>>();
+        let mut user_counts = HashMap::new();
+        let mut post_counts = HashMap::new();
+
+        for persona in &dataset.personas {
+            *user_counts
+                .entry(persona.activity_pattern)
+                .or_insert(0usize) += 1;
+        }
+        for post in &dataset.posts {
+            let pattern = pattern_by_user
+                .get(&post.author_id)
+                .expect("post author should have a persona");
+            *post_counts.entry(*pattern).or_insert(0usize) += 1;
+        }
+
+        let lurker_average = authored_average(&user_counts, &post_counts, ActivityPattern::Lurker);
+        let regular_average =
+            authored_average(&user_counts, &post_counts, ActivityPattern::Regular);
+        let power_average =
+            authored_average(&user_counts, &post_counts, ActivityPattern::PowerUser);
+
+        assert!(regular_average > lurker_average);
+        assert!(power_average > regular_average);
+    }
+
+    #[test]
+    fn generated_social_graph_has_realistic_large_scale_metrics() {
+        let dataset = generate_forum_dataset(&forum_config_with("social-metrics", 1_000, 100, 100))
+            .expect("dataset should build");
+        let social = social_relationships(&dataset);
+        let mut degree = vec![0usize; dataset.users.len()];
+        let user_index = dataset
+            .users
+            .iter()
+            .enumerate()
+            .map(|(index, user)| (user.id.clone(), index))
+            .collect::<HashMap<_, _>>();
+        let mut union_find = UnionFind::new(dataset.users.len());
+
+        for relationship in &social {
+            let RelationshipEndpoint::User(source_id) = &relationship.source else {
+                panic!("social source should be a user");
+            };
+            let RelationshipEndpoint::User(target_id) = &relationship.target else {
+                panic!("social target should be a user");
+            };
+            let source = user_index[source_id];
+            let target = user_index[target_id];
+
+            degree[source] += 1;
+            degree[target] += 1;
+            union_find.union(source, target);
+        }
+
+        let users_with_social_edges = degree.iter().filter(|&&count| count > 0).count();
+        let largest_component = union_find.largest_component_size();
+        let max_degree = degree.iter().copied().max().unwrap_or_default();
+        let average_degree = degree.iter().sum::<usize>() as f32 / degree.len() as f32;
+
+        assert!(users_with_social_edges >= dataset.users.len() * 80 / 100);
+        assert!(largest_component >= dataset.users.len() * 60 / 100);
+        assert!(social.len() <= dataset.users.len() * 50);
+        assert!(max_degree as f32 > average_degree * 2.0);
+    }
+
     fn small_forum_config() -> ForumScenarioConfig {
         ForumScenarioConfig {
             seed: "milestone-5".to_string(),
@@ -1979,6 +2699,177 @@ output_format: postgres-sql
                 comments: 7,
             },
             output_format: OutputFormat::Jsonl,
+        }
+    }
+
+    fn forum_config_with(
+        seed: &str,
+        users: usize,
+        posts: usize,
+        comments: usize,
+    ) -> ForumScenarioConfig {
+        ForumScenarioConfig {
+            seed: seed.to_string(),
+            population: PopulationConfig { users },
+            communities: vec![
+                "general".to_string(),
+                "support".to_string(),
+                "programming".to_string(),
+                "gaming".to_string(),
+                "linux".to_string(),
+            ],
+            content: ContentConfig { posts, comments },
+            output_format: OutputFormat::Jsonl,
+        }
+    }
+
+    fn social_relationships(dataset: &ForumDataset) -> Vec<&Relationship> {
+        dataset
+            .relationships
+            .iter()
+            .filter(|relationship| {
+                matches!(
+                    relationship.kind,
+                    RelationshipKind::Follows | RelationshipKind::Friend
+                )
+            })
+            .collect()
+    }
+
+    fn social_triples(dataset: &ForumDataset) -> Vec<(RelationshipKind, String, String)> {
+        social_relationships(dataset)
+            .into_iter()
+            .map(|relationship| {
+                let RelationshipEndpoint::User(source_id) = &relationship.source else {
+                    panic!("social source should be a user");
+                };
+                let RelationshipEndpoint::User(target_id) = &relationship.target else {
+                    panic!("social target should be a user");
+                };
+
+                (
+                    relationship.kind,
+                    source_id.to_string(),
+                    target_id.to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn test_user(id: &str, locale: &str, interests: &[&str]) -> User {
+        let mut user = User::new(
+            UserId::new(id).expect("user ID should be valid"),
+            id,
+            id,
+            Locale::new(locale).expect("locale should be valid"),
+            ModelTimestamp::new("2026-05-12T18:30:00Z").expect("valid"),
+        )
+        .expect("user should be valid");
+        user.interest_ids = interests
+            .iter()
+            .map(|interest| InterestId::new(*interest).expect("interest ID should be valid"))
+            .collect();
+        user
+    }
+
+    fn affinity_persona(
+        id: &str,
+        sleep_phase: SleepPhase,
+        posting_frequency: f32,
+        controversy_affinity: f32,
+        agreeableness: f32,
+    ) -> Persona {
+        let mut persona = Persona::new(
+            PersonaId::new(id).expect("persona ID should be valid"),
+            UserId::new(format!("user-for-{id}")).expect("user ID should be valid"),
+            "affinity test",
+            ModelTimestamp::new("2026-05-12T18:30:00Z").expect("valid"),
+        )
+        .expect("persona should be valid");
+        persona.openness = 0.60;
+        persona.extroversion = 0.55;
+        persona.conscientiousness = 0.60;
+        persona.agreeableness = agreeableness;
+        persona.neuroticism = 0.30;
+        persona.posting_frequency = posting_frequency;
+        persona.controversy_affinity = controversy_affinity;
+        persona.humor_affinity = 0.45;
+        persona.technical_depth = 0.65;
+        persona.meme_affinity = 0.35;
+        persona.sleep_phase = sleep_phase;
+        persona
+    }
+
+    fn assert_count_near(
+        counts: &HashMap<ActivityPattern, usize>,
+        pattern: ActivityPattern,
+        expected: usize,
+        tolerance: usize,
+    ) {
+        let actual = *counts.get(&pattern).unwrap_or(&0);
+        assert!(
+            actual.abs_diff(expected) <= tolerance,
+            "expected {:?} count near {}, got {}",
+            pattern,
+            expected,
+            actual
+        );
+    }
+
+    fn authored_average(
+        user_counts: &HashMap<ActivityPattern, usize>,
+        post_counts: &HashMap<ActivityPattern, usize>,
+        pattern: ActivityPattern,
+    ) -> f32 {
+        let users = *user_counts.get(&pattern).unwrap_or(&0);
+        let posts = *post_counts.get(&pattern).unwrap_or(&0);
+
+        assert!(users > 0, "expected generated users for {:?}", pattern);
+        posts as f32 / users as f32
+    }
+
+    struct UnionFind {
+        parents: Vec<usize>,
+        sizes: Vec<usize>,
+    }
+
+    impl UnionFind {
+        fn new(len: usize) -> Self {
+            Self {
+                parents: (0..len).collect(),
+                sizes: vec![1; len],
+            }
+        }
+
+        fn find(&mut self, index: usize) -> usize {
+            if self.parents[index] != index {
+                self.parents[index] = self.find(self.parents[index]);
+            }
+
+            self.parents[index]
+        }
+
+        fn union(&mut self, left: usize, right: usize) {
+            let mut left_root = self.find(left);
+            let mut right_root = self.find(right);
+            if left_root == right_root {
+                return;
+            }
+            if self.sizes[left_root] < self.sizes[right_root] {
+                std::mem::swap(&mut left_root, &mut right_root);
+            }
+            self.parents[right_root] = left_root;
+            self.sizes[left_root] += self.sizes[right_root];
+        }
+
+        fn largest_component_size(&mut self) -> usize {
+            let mut counts = std::collections::BTreeMap::new();
+            for index in 0..self.parents.len() {
+                let root = self.find(index);
+                *counts.entry(root).or_insert(0usize) += 1;
+            }
+
+            counts.values().copied().max().unwrap_or_default()
         }
     }
 
