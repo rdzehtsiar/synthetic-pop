@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use synthetic_pop_core::{
     random_bounded_u64, ActivityEvent, ActivityEventId, ActivityEventKind, ActivityObject,
@@ -190,7 +191,25 @@ pub fn validate_forum_temporal_consistency(
     let user_created_at = dataset
         .users
         .iter()
-        .map(|user| (user.id.clone(), minutes_from_timestamp(&user.created_at)))
+        .filter_map(|user| {
+            parse_timestamp_minutes(user.created_at.as_str())
+                .map(|minutes| (user.id.clone(), minutes))
+        })
+        .collect::<HashMap<_, _>>();
+    let user_by_id = dataset
+        .users
+        .iter()
+        .map(|user| (user.id.clone(), user))
+        .collect::<HashMap<_, _>>();
+    let persona_by_id = dataset
+        .personas
+        .iter()
+        .map(|persona| (persona.id.clone(), persona))
+        .collect::<HashMap<_, _>>();
+    let community_by_id = dataset
+        .communities
+        .iter()
+        .map(|community| (community.id.clone(), community))
         .collect::<HashMap<_, _>>();
     let post_by_id = dataset
         .posts
@@ -212,14 +231,16 @@ pub fn validate_forum_temporal_consistency(
     validate_posts_after_authors(dataset, &user_created_at, &mut errors);
     validate_comments_after_posts(dataset, &user_created_at, &post_by_id, &mut errors);
     validate_relationships_after_users(dataset, &user_created_at, &mut errors);
-    validate_activity_events(
-        dataset,
-        &user_created_at,
-        &post_by_id,
-        &comment_by_id,
-        &relationship_by_id,
-        &mut errors,
-    );
+    let activity_context = ActivityValidationContext {
+        user_created_at: &user_created_at,
+        user_by_id: &user_by_id,
+        persona_by_id: &persona_by_id,
+        community_by_id: &community_by_id,
+        post_by_id: &post_by_id,
+        comment_by_id: &comment_by_id,
+        relationship_by_id: &relationship_by_id,
+    };
+    validate_activity_events(dataset, &activity_context, &mut errors);
 
     if errors.is_empty() {
         Ok(())
@@ -1567,11 +1588,21 @@ fn push_activity(
 
 fn sort_activity_events(activity_events: &mut [ActivityEvent]) {
     activity_events.sort_by(|left, right| {
-        left.occurred_at
-            .as_str()
-            .cmp(right.occurred_at.as_str())
+        compare_activity_timestamps(left, right)
             .then_with(|| left.id.as_str().cmp(right.id.as_str()))
     });
+}
+
+fn compare_activity_timestamps(left: &ActivityEvent, right: &ActivityEvent) -> Ordering {
+    match (
+        parse_timestamp_minutes(left.occurred_at.as_str()),
+        parse_timestamp_minutes(right.occurred_at.as_str()),
+    ) {
+        (Some(left_minutes), Some(right_minutes)) => left_minutes.cmp(&right_minutes),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => left.occurred_at.as_str().cmp(right.occurred_at.as_str()),
+    }
 }
 
 fn validate_stable_timestamp_values(dataset: &ForumDataset, errors: &mut Vec<String>) {
@@ -1614,11 +1645,14 @@ fn validate_posts_after_authors(
     errors: &mut Vec<String>,
 ) {
     for post in &dataset.posts {
+        let Some(post_minutes) = parse_timestamp_minutes(post.created_at.as_str()) else {
+            continue;
+        };
         require_after_user(
             "post",
             post.id.as_str(),
             &post.author_id,
-            minutes_from_timestamp(&post.created_at),
+            post_minutes,
             user_created_at,
             errors,
         );
@@ -1632,7 +1666,9 @@ fn validate_comments_after_posts(
     errors: &mut Vec<String>,
 ) {
     for comment in &dataset.comments {
-        let comment_minutes = minutes_from_timestamp(&comment.created_at);
+        let Some(comment_minutes) = parse_timestamp_minutes(comment.created_at.as_str()) else {
+            continue;
+        };
         require_after_user(
             "comment",
             comment.id.as_str(),
@@ -1642,7 +1678,9 @@ fn validate_comments_after_posts(
             errors,
         );
         match post_by_id.get(&comment.post_id) {
-            Some(post) if comment_minutes > minutes_from_timestamp(&post.created_at) => {}
+            Some(post)
+                if parse_timestamp_minutes(post.created_at.as_str())
+                    .is_some_and(|post_minutes| comment_minutes > post_minutes) => {}
             Some(post) => errors.push(format!(
                 "comment {} occurs at or before post {}",
                 comment.id, post.id
@@ -1658,7 +1696,10 @@ fn validate_relationships_after_users(
     errors: &mut Vec<String>,
 ) {
     for relationship in &dataset.relationships {
-        let relationship_minutes = minutes_from_timestamp(&relationship.created_at);
+        let Some(relationship_minutes) = parse_timestamp_minutes(relationship.created_at.as_str())
+        else {
+            continue;
+        };
         require_relationship_endpoint_after_user(
             relationship.id.as_str(),
             &relationship.source,
@@ -1676,81 +1717,118 @@ fn validate_relationships_after_users(
     }
 }
 
+struct ActivityValidationContext<'a> {
+    user_created_at: &'a HashMap<UserId, usize>,
+    user_by_id: &'a HashMap<UserId, &'a User>,
+    persona_by_id: &'a HashMap<PersonaId, &'a Persona>,
+    community_by_id: &'a HashMap<CommunityId, &'a Community>,
+    post_by_id: &'a HashMap<PostId, &'a Post>,
+    comment_by_id: &'a HashMap<CommentId, &'a Comment>,
+    relationship_by_id: &'a HashMap<RelationshipId, &'a Relationship>,
+}
+
 fn validate_activity_events(
     dataset: &ForumDataset,
-    user_created_at: &HashMap<UserId, usize>,
-    post_by_id: &HashMap<PostId, &Post>,
-    comment_by_id: &HashMap<CommentId, &Comment>,
-    relationship_by_id: &HashMap<RelationshipId, &Relationship>,
+    context: &ActivityValidationContext<'_>,
     errors: &mut Vec<String>,
 ) {
     let mut previous = None;
 
     for event in &dataset.activity_events {
-        let event_minutes = minutes_from_timestamp(&event.occurred_at);
-        if let Some(previous_minutes) = previous {
-            if event_minutes < previous_minutes {
-                errors.push(format!("activity event {} is out of order", event.id));
+        let event_minutes = parse_timestamp_minutes(event.occurred_at.as_str());
+        if let Some(event_minutes) = event_minutes {
+            if let Some(previous_minutes) = previous {
+                if event_minutes < previous_minutes {
+                    errors.push(format!("activity event {} is out of order", event.id));
+                }
+            }
+            previous = Some(event_minutes);
+
+            if let Some(actor_id) = &event.actor_id {
+                require_after_user(
+                    "activity",
+                    event.id.as_str(),
+                    actor_id,
+                    event_minutes,
+                    context.user_created_at,
+                    errors,
+                );
             }
         }
-        previous = Some(event_minutes);
 
-        if let Some(actor_id) = &event.actor_id {
-            require_after_user(
-                "activity",
-                event.id.as_str(),
-                actor_id,
-                event_minutes,
-                user_created_at,
-                errors,
-            );
-        }
-
-        validate_activity_object_time(
-            event,
-            event_minutes,
-            post_by_id,
-            comment_by_id,
-            relationship_by_id,
-            errors,
-        );
+        validate_activity_object_time(event, event_minutes, context, errors);
     }
 }
 
 fn validate_activity_object_time(
     event: &ActivityEvent,
-    event_minutes: usize,
-    post_by_id: &HashMap<PostId, &Post>,
-    comment_by_id: &HashMap<CommentId, &Comment>,
-    relationship_by_id: &HashMap<RelationshipId, &Relationship>,
+    event_minutes: Option<usize>,
+    context: &ActivityValidationContext<'_>,
     errors: &mut Vec<String>,
 ) {
+    let Some(expected_object) = expected_activity_object(event.kind) else {
+        return;
+    };
+    let actual_object = activity_object_name(&event.object);
+    if actual_object != expected_object {
+        errors.push(format!(
+            "activity event {} kind/object mismatch: {:?} must reference {expected_object}, got {actual_object}",
+            event.id, event.kind
+        ));
+        return;
+    }
+
     match &event.object {
-        ActivityObject::Post(post_id) if event.kind == ActivityEventKind::PostCreated => {
+        ActivityObject::User(user_id) => {
             require_activity_matches(
                 event,
                 event_minutes,
-                post_by_id.get(post_id),
+                context.user_by_id.get(user_id),
+                "user",
+                errors,
+            );
+        }
+        ActivityObject::Persona(persona_id) => {
+            require_activity_matches(
+                event,
+                event_minutes,
+                context.persona_by_id.get(persona_id),
+                "persona",
+                errors,
+            );
+        }
+        ActivityObject::Community(community_id) => {
+            require_activity_matches(
+                event,
+                event_minutes,
+                context.community_by_id.get(community_id),
+                "community",
+                errors,
+            );
+        }
+        ActivityObject::Post(post_id) => {
+            require_activity_matches(
+                event,
+                event_minutes,
+                context.post_by_id.get(post_id),
                 "post",
                 errors,
             );
         }
-        ActivityObject::Comment(comment_id) if event.kind == ActivityEventKind::CommentCreated => {
+        ActivityObject::Comment(comment_id) => {
             require_activity_matches(
                 event,
                 event_minutes,
-                comment_by_id.get(comment_id),
+                context.comment_by_id.get(comment_id),
                 "comment",
                 errors,
             );
         }
-        ActivityObject::Relationship(relationship_id)
-            if event.kind == ActivityEventKind::RelationshipCreated =>
-        {
+        ActivityObject::Relationship(relationship_id) => {
             require_activity_matches(
                 event,
                 event_minutes,
-                relationship_by_id.get(relationship_id),
+                context.relationship_by_id.get(relationship_id),
                 "relationship",
                 errors,
             );
@@ -1759,9 +1837,71 @@ fn validate_activity_object_time(
     }
 }
 
+fn expected_activity_object(kind: ActivityEventKind) -> Option<&'static str> {
+    match kind {
+        ActivityEventKind::UserCreated => Some("user"),
+        ActivityEventKind::PersonaCreated => Some("persona"),
+        ActivityEventKind::PostCreated => Some("post"),
+        ActivityEventKind::CommentCreated => Some("comment"),
+        ActivityEventKind::RelationshipCreated => Some("relationship"),
+        ActivityEventKind::CommunityJoined => Some("community"),
+        ActivityEventKind::ProfileUpdated
+        | ActivityEventKind::StatusChanged
+        | ActivityEventKind::ReactionCreated
+        | ActivityEventKind::OrganizationJoined => None,
+    }
+}
+
+fn activity_object_name(object: &ActivityObject) -> &'static str {
+    match object {
+        ActivityObject::User(_) => "user",
+        ActivityObject::Profile(_) => "profile",
+        ActivityObject::Username(_) => "username",
+        ActivityObject::Persona(_) => "persona",
+        ActivityObject::Interest(_) => "interest",
+        ActivityObject::Status(_) => "status",
+        ActivityObject::Post(_) => "post",
+        ActivityObject::Comment(_) => "comment",
+        ActivityObject::Reaction(_) => "reaction",
+        ActivityObject::Relationship(_) => "relationship",
+        ActivityObject::Community(_) => "community",
+        ActivityObject::Organization(_) => "organization",
+    }
+}
+
 trait CreatedAt {
     fn created_at(&self) -> &ModelTimestamp;
     fn id_text(&self) -> String;
+}
+
+impl CreatedAt for User {
+    fn created_at(&self) -> &ModelTimestamp {
+        &self.created_at
+    }
+
+    fn id_text(&self) -> String {
+        self.id.to_string()
+    }
+}
+
+impl CreatedAt for Persona {
+    fn created_at(&self) -> &ModelTimestamp {
+        &self.created_at
+    }
+
+    fn id_text(&self) -> String {
+        self.id.to_string()
+    }
+}
+
+impl CreatedAt for Community {
+    fn created_at(&self) -> &ModelTimestamp {
+        &self.created_at
+    }
+
+    fn id_text(&self) -> String {
+        self.id.to_string()
+    }
 }
 
 impl CreatedAt for Post {
@@ -1796,13 +1936,17 @@ impl CreatedAt for Relationship {
 
 fn require_activity_matches<T: CreatedAt>(
     event: &ActivityEvent,
-    event_minutes: usize,
+    event_minutes: Option<usize>,
     record: Option<&&T>,
     entity: &str,
     errors: &mut Vec<String>,
 ) {
     match record {
-        Some(record) if event_minutes == minutes_from_timestamp(record.created_at()) => {}
+        Some(record)
+            if event_minutes.is_some_and(|event_minutes| {
+                parse_timestamp_minutes(record.created_at().as_str())
+                    .is_some_and(|record_minutes| event_minutes == record_minutes)
+            }) => {}
         Some(record) => errors.push(format!(
             "{entity} activity {} does not match {entity} {} timestamp",
             event.id,
@@ -2090,6 +2234,8 @@ fn timestamp_for(namespace: &str, index: usize) -> Result<ModelTimestamp, ModelV
 const MINUTES_PER_DAY: usize = 1_440;
 const ACCOUNT_REFERENCE_DAY: usize = 420;
 const CONTENT_START_MINUTES: usize = ACCOUNT_REFERENCE_DAY * MINUTES_PER_DAY;
+const ACTIVITY_SIMULATION_DAYS: usize = 366 * 4;
+const ACTIVITY_SIMULATION_MINUTES: usize = ACTIVITY_SIMULATION_DAYS * MINUTES_PER_DAY;
 
 fn account_created_at_timestamp(
     config: &ForumScenarioConfig,
@@ -2196,12 +2342,7 @@ fn scheduled_comment_timestamp(
         scheduled_activity_minutes(config, "comments", index, entity_id, author, persona);
     let reply_delay = comment_reply_delay_minutes(config, entity_id, persona);
     let minimum = minutes_from_timestamp(&post.created_at) + reply_delay;
-    let minutes = if candidate >= minimum {
-        candidate
-    } else {
-        let days_needed = (minimum - candidate) / MINUTES_PER_DAY + 1;
-        candidate + days_needed * MINUTES_PER_DAY
-    };
+    let minutes = advance_activity_candidate_after_minimum(candidate, minimum);
 
     ModelTimestamp::new(timestamp_from_minutes(minutes))
 }
@@ -2223,10 +2364,16 @@ fn scheduled_activity_minutes(
         CONTENT_START_MINUTES + day * MINUTES_PER_DAY + utc_hour as usize * 60 + local_minute;
     let minimum = minutes_from_timestamp(&author.created_at) + 60;
 
-    if scheduled >= minimum {
-        scheduled
+    advance_activity_candidate_after_minimum(scheduled, minimum)
+}
+
+fn advance_activity_candidate_after_minimum(candidate: usize, minimum: usize) -> usize {
+    if candidate >= minimum {
+        candidate
     } else {
-        scheduled + ((minimum - scheduled) / MINUTES_PER_DAY + 1) * MINUTES_PER_DAY
+        candidate
+            + ((minimum - candidate) / ACTIVITY_SIMULATION_MINUTES + 1)
+                * ACTIVITY_SIMULATION_MINUTES
     }
 }
 
@@ -2251,7 +2398,7 @@ fn scheduled_activity_day(
     let cluster_day = deterministic_index(config, namespace, entity_id, "activity_day", cadence);
     let burst_day = deterministic_index(config, namespace, entity_id, "burst_day", 3);
 
-    anchor
+    (anchor
         + cluster * cadence
         + if matches!(
             persona.activity_pattern,
@@ -2260,7 +2407,8 @@ fn scheduled_activity_day(
             burst_day
         } else {
             cluster_day
-        }
+        })
+        % ACTIVITY_SIMULATION_DAYS
 }
 
 fn scheduled_local_hour(
@@ -3105,6 +3253,157 @@ output_format: postgres-sql
     }
 
     #[test]
+    fn max_content_activity_schedule_stays_parseable_and_sortable() {
+        let config = ForumScenarioConfig {
+            seed: "temporal-large-window".to_string(),
+            population: PopulationConfig { users: 1 },
+            communities: vec!["general".to_string()],
+            content: ContentConfig {
+                posts: MAX_CONTENT_ITEMS,
+                comments: MAX_CONTENT_ITEMS,
+            },
+            output_format: OutputFormat::Jsonl,
+        };
+        config
+            .validate()
+            .expect("max content config should be valid");
+        let user = test_user("user-temporal-large", "en-US", &[]);
+        let mut persona =
+            affinity_persona("persona-temporal-large", SleepPhase::Daytime, 0.1, 0.1, 0.8);
+        persona.user_id = user.id.clone();
+        persona.activity_pattern = ActivityPattern::Lurker;
+
+        let first = scheduled_post_timestamp(
+            &config,
+            MAX_CONTENT_ITEMS - 2,
+            "post-999999",
+            &user,
+            &persona,
+        )
+        .expect("timestamp should build");
+        let second = scheduled_post_timestamp(
+            &config,
+            MAX_CONTENT_ITEMS - 1,
+            "post-1000000",
+            &user,
+            &persona,
+        )
+        .expect("timestamp should build");
+        let repeated = scheduled_post_timestamp(
+            &config,
+            MAX_CONTENT_ITEMS - 1,
+            "post-1000000",
+            &user,
+            &persona,
+        )
+        .expect("timestamp should build");
+
+        assert_eq!(second, repeated);
+        for timestamp in [&first, &second] {
+            assert_eq!(timestamp.as_str().len(), 20);
+            let minutes =
+                parse_timestamp_minutes(timestamp.as_str()).expect("timestamp should parse");
+            assert_eq!(timestamp.as_str(), timestamp_from_minutes(minutes));
+        }
+
+        let mut events = vec![
+            ActivityEvent {
+                id: ActivityEventId::new("activity-000002").expect("activity ID should be valid"),
+                kind: ActivityEventKind::PostCreated,
+                actor_id: Some(user.id.clone()),
+                object: ActivityObject::Post(
+                    PostId::new("post-1000000").expect("post ID should be valid"),
+                ),
+                occurred_at: second,
+            },
+            ActivityEvent {
+                id: ActivityEventId::new("activity-000001").expect("activity ID should be valid"),
+                kind: ActivityEventKind::PostCreated,
+                actor_id: Some(user.id.clone()),
+                object: ActivityObject::Post(
+                    PostId::new("post-999999").expect("post ID should be valid"),
+                ),
+                occurred_at: first,
+            },
+        ];
+
+        sort_activity_events(&mut events);
+
+        let ordered_minutes = events
+            .iter()
+            .map(|event| {
+                parse_timestamp_minutes(event.occurred_at.as_str())
+                    .expect("sorted timestamp should parse")
+            })
+            .collect::<Vec<_>>();
+        assert!(ordered_minutes.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+
+    #[test]
+    fn validator_reports_malformed_timestamps_without_panicking() {
+        let mut dataset =
+            generate_forum_dataset(&small_forum_config()).expect("dataset should build");
+        dataset.users[0].created_at =
+            ModelTimestamp::new("10000-01-01T00:00:00Z").expect("timestamp is non-empty");
+
+        let error = validate_forum_temporal_consistency(&dataset)
+            .expect_err("malformed timestamp should be reported");
+
+        assert!(error.message().contains("unstable timestamp"));
+        assert!(error.message().contains("10000-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn validator_checks_user_persona_and_community_activity_events() {
+        let mut dataset =
+            generate_forum_dataset(&small_forum_config()).expect("dataset should build");
+        let user_id = dataset.users[0].id.clone();
+        let persona_id = dataset.personas[0].id.clone();
+        let community_id = dataset.communities[0].id.clone();
+        let shifted_user_timestamp = timestamp_plus_minutes(&dataset.users[0].created_at, 1);
+        let shifted_persona_timestamp = timestamp_plus_minutes(&dataset.personas[0].created_at, 1);
+        let shifted_community_timestamp =
+            timestamp_plus_minutes(&dataset.communities[0].created_at, 1);
+        let extra_community_timestamp =
+            timestamp_plus_minutes(&dataset.communities[0].created_at, 10);
+
+        dataset
+            .activity_events
+            .iter_mut()
+            .find(|event| event.kind == ActivityEventKind::UserCreated)
+            .expect("user activity should exist")
+            .occurred_at = shifted_user_timestamp;
+        dataset
+            .activity_events
+            .iter_mut()
+            .find(|event| event.kind == ActivityEventKind::PersonaCreated)
+            .expect("persona activity should exist")
+            .occurred_at = shifted_persona_timestamp;
+        dataset
+            .activity_events
+            .iter_mut()
+            .find(|event| event.kind == ActivityEventKind::CommunityJoined)
+            .expect("community activity should exist")
+            .occurred_at = shifted_community_timestamp;
+        dataset.activity_events.push(ActivityEvent {
+            id: ActivityEventId::new("activity-extra").expect("activity ID should be valid"),
+            kind: ActivityEventKind::CommunityJoined,
+            actor_id: Some(user_id),
+            object: ActivityObject::Persona(persona_id),
+            occurred_at: extra_community_timestamp,
+        });
+
+        let error = validate_forum_temporal_consistency(&dataset)
+            .expect_err("activity mismatches should be reported");
+
+        assert!(error.message().contains("user activity"));
+        assert!(error.message().contains("persona activity"));
+        assert!(error.message().contains("community activity"));
+        assert!(error.message().contains("kind/object mismatch"));
+        assert!(error.message().contains(community_id.as_str()));
+    }
+
+    #[test]
     fn generated_relationships_and_activity_events_are_consistent() {
         let dataset = generate_forum_dataset(&small_forum_config()).expect("dataset should build");
 
@@ -3851,6 +4150,11 @@ output_format: postgres-sql
         timestamp.as_str()[11..13]
             .parse()
             .expect("timestamp hour should parse")
+    }
+
+    fn timestamp_plus_minutes(timestamp: &ModelTimestamp, minutes: usize) -> ModelTimestamp {
+        let base = parse_timestamp_minutes(timestamp.as_str()).expect("timestamp should parse");
+        ModelTimestamp::new(timestamp_from_minutes(base + minutes)).expect("timestamp should build")
     }
 
     struct UnionFind {
