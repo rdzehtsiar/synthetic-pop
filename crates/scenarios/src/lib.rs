@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use synthetic_pop_core::{
     random_bounded_u64, ActivityEvent, ActivityEventId, ActivityEventKind, ActivityObject,
-    ActivityPattern, Comment, CommentId, Community, CommunityId, Locale, ModelTimestamp,
-    ModelValidationError, Persona, PersonaId, Post, PostId, Relationship, RelationshipEndpoint,
-    RelationshipId, RelationshipKind, SleepPhase, User, UserId, Verbosity,
+    ActivityPattern, Comment, CommentId, Community, CommunityId, Interest, InterestId, Locale,
+    ModelTimestamp, ModelValidationError, Persona, PersonaId, Post, PostId, Relationship,
+    RelationshipEndpoint, RelationshipId, RelationshipKind, SleepPhase, User, UserId, Verbosity,
 };
 
 pub const FIRST_SCENARIO: &str = "forum";
@@ -116,6 +116,7 @@ pub fn parse_forum_config_yaml(input: &str) -> Result<ScenarioConfig, ScenarioCo
 pub struct ForumDataset {
     pub users: Vec<User>,
     pub personas: Vec<Persona>,
+    pub interests: Vec<Interest>,
     pub communities: Vec<Community>,
     pub posts: Vec<Post>,
     pub comments: Vec<Comment>,
@@ -132,13 +133,21 @@ pub fn generate_forum_dataset(
     let communities = generate_communities(config, &mut activity_events)?;
     let mut users = generate_users(config, &communities, &mut activity_events)?;
     let personas = generate_personas(config, &mut users, &mut activity_events)?;
-    let relationships =
-        generate_memberships(config, &mut users, &communities, &mut activity_events)?;
+    let interests = generate_interests()?;
+    assign_user_interests(config, &mut users, &personas, &interests);
+    let relationships = generate_memberships(
+        config,
+        &mut users,
+        &personas,
+        &communities,
+        &mut activity_events,
+    )?;
     let community_members = community_member_indexes(&users, &communities);
     let community_indexes = community_indexes(&communities);
     let posts = generate_posts(
         config,
         &users,
+        &personas,
         &communities,
         &community_members,
         &mut activity_events,
@@ -146,6 +155,7 @@ pub fn generate_forum_dataset(
     let comments = generate_comments(
         config,
         &users,
+        &personas,
         &posts,
         &community_indexes,
         &community_members,
@@ -155,6 +165,7 @@ pub fn generate_forum_dataset(
     Ok(ForumDataset {
         users,
         personas,
+        interests,
         communities,
         posts,
         comments,
@@ -242,6 +253,95 @@ const ACTIVITY_PATTERNS: [ActivityPattern; 5] = [
     ActivityPattern::Bursty,
     ActivityPattern::PowerUser,
 ];
+const INTEREST_CATALOG: [InterestSpec; 15] = [
+    InterestSpec::new(
+        "interest-programming",
+        "Programming",
+        "technical",
+        1.00,
+        0.10,
+        0.00,
+    ),
+    InterestSpec::new("interest-linux", "Linux", "technical", 0.95, 0.00, 0.00),
+    InterestSpec::new("interest-systems", "Systems", "technical", 0.90, 0.00, 0.00),
+    InterestSpec::new("interest-tooling", "Tooling", "technical", 0.85, 0.05, 0.00),
+    InterestSpec::new(
+        "interest-community",
+        "Community",
+        "social",
+        0.00,
+        1.00,
+        0.10,
+    ),
+    InterestSpec::new("interest-events", "Events", "social", 0.00, 0.90, 0.05),
+    InterestSpec::new(
+        "interest-collaboration",
+        "Collaboration",
+        "social",
+        0.15,
+        0.85,
+        0.00,
+    ),
+    InterestSpec::new("interest-gaming", "Gaming", "culture", 0.05, 0.20, 0.95),
+    InterestSpec::new("interest-memes", "Memes", "culture", 0.00, 0.10, 1.00),
+    InterestSpec::new("interest-culture", "Culture", "culture", 0.00, 0.25, 0.80),
+    InterestSpec::new(
+        "interest-photography",
+        "Photography",
+        "creative",
+        0.10,
+        0.15,
+        0.20,
+    ),
+    InterestSpec::new("interest-writing", "Writing", "creative", 0.05, 0.25, 0.10),
+    InterestSpec::new("interest-design", "Design", "creative", 0.20, 0.20, 0.15),
+    InterestSpec::new(
+        "interest-productivity",
+        "Productivity",
+        "practical",
+        0.25,
+        0.15,
+        0.00,
+    ),
+    InterestSpec::new(
+        "interest-learning",
+        "Learning",
+        "practical",
+        0.35,
+        0.20,
+        0.00,
+    ),
+];
+
+#[derive(Debug, Clone, Copy)]
+struct InterestSpec {
+    id: &'static str,
+    label: &'static str,
+    category: &'static str,
+    technical_weight: f32,
+    social_weight: f32,
+    culture_weight: f32,
+}
+
+impl InterestSpec {
+    const fn new(
+        id: &'static str,
+        label: &'static str,
+        category: &'static str,
+        technical_weight: f32,
+        social_weight: f32,
+        culture_weight: f32,
+    ) -> Self {
+        Self {
+            id,
+            label,
+            category,
+            technical_weight,
+            social_weight,
+            culture_weight,
+        }
+    }
+}
 
 fn generate_communities(
     config: &ForumScenarioConfig,
@@ -383,21 +483,66 @@ fn generate_personas(
         .collect()
 }
 
+fn generate_interests() -> Result<Vec<Interest>, ForumGenerationError> {
+    INTEREST_CATALOG
+        .iter()
+        .map(|spec| {
+            let mut interest = Interest::new(InterestId::new(spec.id)?, spec.label)?;
+            interest.category = Some(spec.category.to_string());
+            Ok(interest)
+        })
+        .collect()
+}
+
+fn assign_user_interests(
+    config: &ForumScenarioConfig,
+    users: &mut [User],
+    personas: &[Persona],
+    interests: &[Interest],
+) {
+    for (user, persona) in users.iter_mut().zip(personas) {
+        let count =
+            2 + deterministic_index(config, "interests", user.id.as_str(), "interest_count", 4);
+        let mut scored: Vec<(usize, f32)> = INTEREST_CATALOG
+            .iter()
+            .enumerate()
+            .map(|(index, spec)| {
+                let tie_breaker = persona_interest_tie_breaker(config, persona, spec);
+                (index, persona_interest_score(persona, spec) + tie_breaker)
+            })
+            .collect();
+        scored.sort_by(|left, right| {
+            right.1.total_cmp(&left.1).then_with(|| {
+                INTEREST_CATALOG[left.0]
+                    .id
+                    .cmp(INTEREST_CATALOG[right.0].id)
+            })
+        });
+        user.interest_ids = scored
+            .into_iter()
+            .take(count)
+            .map(|(index, _)| interests[index].id.clone())
+            .collect();
+    }
+}
+
 fn generate_memberships(
     config: &ForumScenarioConfig,
     users: &mut [User],
+    personas: &[Persona],
     communities: &[Community],
     activity_events: &mut Vec<ActivityEvent>,
 ) -> Result<Vec<Relationship>, ForumGenerationError> {
     let mut relationships = Vec::new();
+    let interest_communities = community_interest_indexes(communities);
 
     for (user_index, user) in users.iter_mut().enumerate() {
-        let primary = deterministic_index(
+        let primary = choose_primary_community(
             config,
-            "memberships",
-            user.id.as_str(),
-            "primary_community",
-            communities.len(),
+            user,
+            &personas[user_index],
+            communities,
+            &interest_communities,
         );
         push_membership(
             &mut relationships,
@@ -458,6 +603,58 @@ fn generate_memberships(
     Ok(relationships)
 }
 
+fn choose_primary_community(
+    config: &ForumScenarioConfig,
+    user: &User,
+    persona: &Persona,
+    communities: &[Community],
+    interest_communities: &HashMap<String, usize>,
+) -> usize {
+    for interest_id in &user.interest_ids {
+        let key = interest_id
+            .as_str()
+            .strip_prefix("interest-")
+            .unwrap_or_else(|| interest_id.as_str());
+        if let Some(index) = interest_communities.get(key) {
+            return *index;
+        }
+    }
+
+    if persona.extroversion + persona.posting_frequency >= 1.25 {
+        if let Some(index) = interest_communities.get("community") {
+            return *index;
+        }
+    }
+
+    deterministic_index(
+        config,
+        "memberships",
+        user.id.as_str(),
+        "primary_community",
+        communities.len(),
+    )
+}
+
+fn community_interest_indexes(communities: &[Community]) -> HashMap<String, usize> {
+    let interest_slugs = INTEREST_CATALOG
+        .iter()
+        .map(|interest| slug(interest.label))
+        .collect::<Vec<_>>();
+    let mut indexes = HashMap::new();
+
+    for (community_index, community) in communities.iter().enumerate() {
+        let community_slug = slug(&community.name);
+        if interest_slugs
+            .iter()
+            .any(|interest| interest == &community_slug)
+        {
+            indexes.entry(community_slug).or_insert(community_index);
+        }
+    }
+
+    indexes
+}
+
 fn push_membership(
     relationships: &mut Vec<Relationship>,
     activity_events: &mut Vec<ActivityEvent>,
@@ -491,6 +688,7 @@ fn push_membership(
 fn generate_posts(
     config: &ForumScenarioConfig,
     users: &[User],
+    personas: &[Persona],
     communities: &[Community],
     community_members: &[Vec<usize>],
     activity_events: &mut Vec<ActivityEvent>,
@@ -504,6 +702,7 @@ fn generate_posts(
             let author = choose_member(
                 config,
                 users,
+                personas,
                 &community_members[community_index],
                 id.as_str(),
             );
@@ -535,6 +734,7 @@ fn generate_posts(
 fn generate_comments(
     config: &ForumScenarioConfig,
     users: &[User],
+    personas: &[Persona],
     posts: &[Post],
     community_indexes: &HashMap<CommunityId, usize>,
     community_members: &[Vec<usize>],
@@ -556,6 +756,7 @@ fn generate_comments(
             let author = choose_comment_author(
                 config,
                 users,
+                personas,
                 &community_members[*community_index],
                 post.author_id.as_str(),
                 id.as_str(),
@@ -584,29 +785,108 @@ fn generate_comments(
 fn choose_member<'a>(
     config: &ForumScenarioConfig,
     users: &'a [User],
+    personas: &[Persona],
     members: &[usize],
     entity_id: &str,
 ) -> &'a User {
-    let index = deterministic_index(config, "posts", entity_id, "author", members.len());
+    let index = choose_weighted_member_index(config, personas, members, "posts", entity_id);
 
-    &users[members[index]]
+    &users[index]
 }
 
 fn choose_comment_author<'a>(
     config: &ForumScenarioConfig,
     users: &'a [User],
+    personas: &[Persona],
     members: &[usize],
     post_author_id: &str,
     entity_id: &str,
 ) -> &'a User {
-    let offset = deterministic_index(config, "comments", entity_id, "author", members.len());
-    let author = &users[members[offset]];
+    let author_index =
+        choose_weighted_member_index(config, personas, members, "comments", entity_id);
+    let author = &users[author_index];
 
     if members.len() == 1 || author.id.as_str() != post_author_id {
         return author;
     }
 
-    &users[members[(offset + 1) % members.len()]]
+    let fallback_offset = deterministic_index(
+        config,
+        "comments",
+        entity_id,
+        "fallback_author",
+        members.len(),
+    );
+    for offset in 1..=members.len() {
+        let candidate = &users[members[(fallback_offset + offset) % members.len()]];
+        if candidate.id.as_str() != post_author_id {
+            return candidate;
+        }
+    }
+
+    author
+}
+
+fn choose_weighted_member_index(
+    config: &ForumScenarioConfig,
+    personas: &[Persona],
+    members: &[usize],
+    namespace: &str,
+    entity_id: &str,
+) -> usize {
+    let candidate_count = members.len().min(3);
+    let mut best =
+        members[deterministic_index(config, namespace, entity_id, "author", members.len())];
+    let mut best_score = author_activity_score(&personas[best])
+        + author_tie_breaker(config, namespace, entity_id, personas[best].id.as_str());
+
+    for candidate_index in 0..candidate_count {
+        let field = match candidate_index {
+            0 => "author_candidate_0",
+            1 => "author_candidate_1",
+            _ => "author_candidate_2",
+        };
+        let offset = deterministic_index(config, namespace, entity_id, field, members.len());
+        let user_index = members[offset];
+        let score = author_activity_score(&personas[user_index])
+            + author_tie_breaker(
+                config,
+                namespace,
+                entity_id,
+                personas[user_index].id.as_str(),
+            );
+
+        if score > best_score {
+            best = user_index;
+            best_score = score;
+        }
+    }
+
+    best
+}
+
+fn author_activity_score(persona: &Persona) -> f32 {
+    let activity = match persona.activity_pattern {
+        ActivityPattern::Lurker => 0.05,
+        ActivityPattern::Casual => 0.25,
+        ActivityPattern::Regular => 0.55,
+        ActivityPattern::Bursty => 0.70,
+        ActivityPattern::PowerUser => 0.90,
+    };
+
+    persona.posting_frequency * 0.50 + persona.extroversion * 0.25 + activity * 0.25
+}
+
+fn author_tie_breaker(
+    config: &ForumScenarioConfig,
+    namespace: &str,
+    entity_id: &str,
+    persona_id: &str,
+) -> f32 {
+    let value = random_bounded_u64(&config.seed, namespace, entity_id, persona_id, 1_000)
+        .expect("non-zero author tie-breaker bound should produce a value");
+
+    (value as f32) / 1_000_000.0
 }
 
 fn community_member_indexes(users: &[User], communities: &[Community]) -> Vec<Vec<usize>> {
@@ -676,6 +956,33 @@ fn persona_score(config: &ForumScenarioConfig, entity_id: &str, field: &str) -> 
         .expect("non-zero persona score bound should produce a value");
 
     (value as f32) / 1_000.0
+}
+
+fn persona_interest_score(persona: &Persona, spec: &InterestSpec) -> f32 {
+    let technical = persona.technical_depth * spec.technical_weight;
+    let social = ((persona.extroversion + persona.posting_frequency) / 2.0) * spec.social_weight;
+    let culture = ((persona.meme_affinity + persona.humor_affinity) / 2.0) * spec.culture_weight;
+    let openness = persona.openness * 0.12;
+    let conscientiousness = persona.conscientiousness * 0.04;
+
+    technical + social + culture + openness + conscientiousness
+}
+
+fn persona_interest_tie_breaker(
+    config: &ForumScenarioConfig,
+    persona: &Persona,
+    spec: &InterestSpec,
+) -> f32 {
+    let value = random_bounded_u64(
+        &config.seed,
+        "interests",
+        persona.id.as_str(),
+        spec.id,
+        1_000,
+    )
+    .expect("non-zero interest tie-breaker bound should produce a value");
+
+    (value as f32) / 1_000_000.0
 }
 
 fn persona_summary(
@@ -1127,6 +1434,7 @@ output_format: postgres-sql
 
         assert_eq!(dataset.users.len(), 4);
         assert_eq!(dataset.personas.len(), dataset.users.len());
+        assert_eq!(dataset.interests.len(), INTEREST_CATALOG.len());
         assert_eq!(dataset.communities.len(), 2);
         assert_eq!(dataset.posts.len(), 5);
         assert_eq!(dataset.comments.len(), 7);
@@ -1289,6 +1597,102 @@ output_format: postgres-sql
     }
 
     #[test]
+    fn generated_interest_records_and_user_references_are_valid() {
+        let dataset = generate_forum_dataset(&small_forum_config()).expect("dataset should build");
+        let valid_ids = dataset
+            .interests
+            .iter()
+            .map(|interest| interest.id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let assigned_ids = dataset
+            .users
+            .iter()
+            .flat_map(|user| user.interest_ids.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(dataset.interests.len(), INTEREST_CATALOG.len());
+        assert!(dataset
+            .interests
+            .iter()
+            .all(|interest| interest.category.is_some()));
+        assert!(assigned_ids.len() >= 4);
+        for user in &dataset.users {
+            assert!((2..=5).contains(&user.interest_ids.len()));
+            assert!(user.interest_ids.iter().all(|id| valid_ids.contains(id)));
+        }
+    }
+
+    #[test]
+    fn interest_scores_follow_visible_persona_correlations() {
+        let technical = persona_for_scores(1.0, 0.1, 0.1, 0.1, 0.1);
+        let social = persona_for_scores(0.1, 1.0, 1.0, 0.1, 0.1);
+        let culture = persona_for_scores(0.1, 0.1, 0.1, 1.0, 1.0);
+        let programming = catalog_interest("interest-programming");
+        let linux = catalog_interest("interest-linux");
+        let community = catalog_interest("interest-community");
+        let events = catalog_interest("interest-events");
+        let gaming = catalog_interest("interest-gaming");
+        let memes = catalog_interest("interest-memes");
+
+        assert!(
+            persona_interest_score(&technical, programming)
+                > persona_interest_score(&social, programming)
+        );
+        assert!(
+            persona_interest_score(&technical, linux) > persona_interest_score(&culture, linux)
+        );
+        assert!(
+            persona_interest_score(&social, community)
+                > persona_interest_score(&technical, community)
+        );
+        assert!(persona_interest_score(&social, events) > persona_interest_score(&culture, events));
+        assert!(persona_interest_score(&culture, gaming) > persona_interest_score(&social, gaming));
+        assert!(
+            persona_interest_score(&culture, memes) > persona_interest_score(&technical, memes)
+        );
+    }
+
+    #[test]
+    fn matching_interests_bias_primary_community_membership() {
+        let config = ForumScenarioConfig {
+            seed: "interest-community-bias".to_string(),
+            population: PopulationConfig { users: 20 },
+            communities: vec![
+                "programming".to_string(),
+                "gaming".to_string(),
+                "linux".to_string(),
+                "community".to_string(),
+            ],
+            content: ContentConfig {
+                posts: 12,
+                comments: 12,
+            },
+            output_format: OutputFormat::Jsonl,
+        };
+        let dataset = generate_forum_dataset(&config).expect("dataset should build");
+
+        for user in &dataset.users {
+            let Some(first_community_id) = user.community_ids.first() else {
+                panic!("generated user should have at least one community")
+            };
+            let matching_interest = user.interest_ids.iter().find_map(|interest_id| {
+                interest_id
+                    .as_str()
+                    .strip_prefix("interest-")
+                    .filter(|slug| config.communities.iter().any(|community| community == slug))
+            });
+            if let Some(slug) = matching_interest {
+                assert!(
+                    first_community_id.as_str().contains(slug),
+                    "{} should select a primary community matching {}",
+                    user.id,
+                    slug
+                );
+            }
+        }
+    }
+
+    #[test]
     fn generation_keeps_every_community_usable_for_post_authors() {
         let config = ForumScenarioConfig {
             seed: "sparse-membership".to_string(),
@@ -1342,5 +1746,34 @@ output_format: postgres-sql
             },
             output_format: OutputFormat::Jsonl,
         }
+    }
+
+    fn catalog_interest(id: &str) -> &'static InterestSpec {
+        INTEREST_CATALOG
+            .iter()
+            .find(|spec| spec.id == id)
+            .expect("catalog interest should exist")
+    }
+
+    fn persona_for_scores(
+        technical_depth: f32,
+        extroversion: f32,
+        posting_frequency: f32,
+        meme_affinity: f32,
+        humor_affinity: f32,
+    ) -> Persona {
+        let mut persona = Persona::new(
+            PersonaId::new("persona-score-test").expect("valid"),
+            UserId::new("user-score-test").expect("valid"),
+            "score test",
+            ModelTimestamp::new("2026-05-12T18:30:00Z").expect("valid"),
+        )
+        .expect("persona should be valid");
+        persona.technical_depth = technical_depth;
+        persona.extroversion = extroversion;
+        persona.posting_frequency = posting_frequency;
+        persona.meme_affinity = meme_affinity;
+        persona.humor_affinity = humor_affinity;
+        persona
     }
 }
