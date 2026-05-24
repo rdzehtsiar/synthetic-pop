@@ -334,65 +334,75 @@ const SLEEP_PHASES: [SleepPhase; 4] = [
     SleepPhase::NightOwl,
     SleepPhase::Irregular,
 ];
-const INTEREST_CATALOG: [InterestSpec; 15] = [
-    InterestSpec::new(
-        "interest-programming",
-        "Programming",
-        "technical",
-        1.00,
-        0.10,
-        0.00,
-    ),
-    InterestSpec::new("interest-linux", "Linux", "technical", 0.95, 0.00, 0.00),
-    InterestSpec::new("interest-systems", "Systems", "technical", 0.90, 0.00, 0.00),
-    InterestSpec::new("interest-tooling", "Tooling", "technical", 0.85, 0.05, 0.00),
-    InterestSpec::new(
-        "interest-community",
-        "Community",
-        "social",
-        0.00,
-        1.00,
-        0.10,
-    ),
-    InterestSpec::new("interest-events", "Events", "social", 0.00, 0.90, 0.05),
-    InterestSpec::new(
-        "interest-collaboration",
-        "Collaboration",
-        "social",
-        0.15,
-        0.85,
-        0.00,
-    ),
-    InterestSpec::new("interest-gaming", "Gaming", "culture", 0.05, 0.20, 0.95),
-    InterestSpec::new("interest-memes", "Memes", "culture", 0.00, 0.10, 1.00),
-    InterestSpec::new("interest-culture", "Culture", "culture", 0.00, 0.25, 0.80),
-    InterestSpec::new(
-        "interest-photography",
-        "Photography",
-        "creative",
-        0.10,
-        0.15,
-        0.20,
-    ),
-    InterestSpec::new("interest-writing", "Writing", "creative", 0.05, 0.25, 0.10),
-    InterestSpec::new("interest-design", "Design", "creative", 0.20, 0.20, 0.15),
-    InterestSpec::new(
-        "interest-productivity",
-        "Productivity",
-        "practical",
-        0.25,
-        0.15,
-        0.00,
-    ),
-    InterestSpec::new(
-        "interest-learning",
-        "Learning",
-        "practical",
-        0.35,
-        0.20,
-        0.00,
-    ),
+const INTEREST_IDS: [&str; 15] = [
+    "interest-programming",
+    "interest-linux",
+    "interest-systems",
+    "interest-tooling",
+    "interest-community",
+    "interest-events",
+    "interest-collaboration",
+    "interest-gaming",
+    "interest-memes",
+    "interest-culture",
+    "interest-photography",
+    "interest-writing",
+    "interest-design",
+    "interest-productivity",
+    "interest-learning",
 ];
+const INTEREST_LABELS: [&str; 15] = [
+    "Programming",
+    "Linux",
+    "Systems",
+    "Tooling",
+    "Community",
+    "Events",
+    "Collaboration",
+    "Gaming",
+    "Memes",
+    "Culture",
+    "Photography",
+    "Writing",
+    "Design",
+    "Productivity",
+    "Learning",
+];
+const INTEREST_CATEGORIES: [&str; 15] = [
+    "technical",
+    "technical",
+    "technical",
+    "technical",
+    "social",
+    "social",
+    "social",
+    "culture",
+    "culture",
+    "culture",
+    "creative",
+    "creative",
+    "creative",
+    "practical",
+    "practical",
+];
+const INTEREST_WEIGHTS: [(f32, f32, f32); 15] = [
+    (1.00, 0.10, 0.00),
+    (0.95, 0.00, 0.00),
+    (0.90, 0.00, 0.00),
+    (0.85, 0.05, 0.00),
+    (0.00, 1.00, 0.10),
+    (0.00, 0.90, 0.05),
+    (0.15, 0.85, 0.00),
+    (0.05, 0.20, 0.95),
+    (0.00, 0.10, 1.00),
+    (0.00, 0.25, 0.80),
+    (0.10, 0.15, 0.20),
+    (0.05, 0.25, 0.10),
+    (0.20, 0.20, 0.15),
+    (0.25, 0.15, 0.00),
+    (0.35, 0.20, 0.00),
+];
+const INTEREST_CATALOG_LEN: usize = INTEREST_IDS.len();
 const BIO_ROLES: [&str; 14] = [
     "backend engineer",
     "forum moderator",
@@ -664,6 +674,40 @@ impl InterestSpec {
     }
 }
 
+fn interest_spec(index: usize) -> InterestSpec {
+    let (technical_weight, social_weight, culture_weight) = INTEREST_WEIGHTS[index];
+
+    InterestSpec::new(
+        INTEREST_IDS[index],
+        INTEREST_LABELS[index],
+        INTEREST_CATEGORIES[index],
+        technical_weight,
+        social_weight,
+        culture_weight,
+    )
+}
+
+fn interest_specs() -> impl Iterator<Item = InterestSpec> {
+    (0..INTEREST_CATALOG_LEN).map(interest_spec)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PersonaAttributes {
+    verbosity: Verbosity,
+    sleep_phase: SleepPhase,
+    activity_pattern: ActivityPattern,
+    openness: f32,
+    extroversion: f32,
+    conscientiousness: f32,
+    agreeableness: f32,
+    neuroticism: f32,
+    posting_frequency: f32,
+    controversy_affinity: f32,
+    humor_affinity: f32,
+    technical_depth: f32,
+    meme_affinity: f32,
+}
+
 fn generate_communities(
     config: &ForumScenarioConfig,
     activity_events: &mut Vec<ActivityEvent>,
@@ -740,62 +784,96 @@ fn generate_personas(
             let id = persona_id(index)?;
             let entity_id = id.as_str();
             let timestamp = persona_created_at_timestamp(config, index, entity_id, user)?;
-            let verbosity = choose(config, "personas", entity_id, "verbosity", &VERBOSITIES);
-            let sleep_phase = choose(config, "personas", entity_id, "sleep_phase", &SLEEP_PHASES);
-            let activity_pattern = activity_pattern_for(config, entity_id);
-            let openness = persona_score(config, entity_id, "openness");
-            let extroversion = persona_score(config, entity_id, "extroversion");
-            let conscientiousness = persona_score(config, entity_id, "conscientiousness");
-            let agreeableness = persona_score(config, entity_id, "agreeableness");
-            let neuroticism = persona_score(config, entity_id, "neuroticism");
-            let posting_frequency = persona_score(config, entity_id, "posting_frequency");
-            let controversy_affinity = persona_score(config, entity_id, "controversy_affinity");
-            let humor_affinity = persona_score(config, entity_id, "humor_affinity");
-            let technical_depth = persona_score(config, entity_id, "technical_depth");
-            let meme_affinity = persona_score(config, entity_id, "meme_affinity");
-            let mut persona = Persona::new(
-                id.clone(),
-                user.id.clone(),
-                persona_summary(verbosity, activity_pattern, technical_depth, humor_affinity),
-                timestamp.clone(),
-            )?;
-            persona.traits = persona_traits(
-                openness,
-                extroversion,
-                conscientiousness,
-                agreeableness,
-                technical_depth,
-                meme_affinity,
-            );
-            persona.openness = openness;
-            persona.extroversion = extroversion;
-            persona.conscientiousness = conscientiousness;
-            persona.agreeableness = agreeableness;
-            persona.neuroticism = neuroticism;
-            persona.posting_frequency = posting_frequency;
-            persona.controversy_affinity = controversy_affinity;
-            persona.humor_affinity = humor_affinity;
-            persona.technical_depth = technical_depth;
-            persona.meme_affinity = meme_affinity;
-            persona.verbosity = verbosity;
-            persona.sleep_phase = sleep_phase;
-            persona.activity_pattern = activity_pattern;
+            let attributes = persona_attributes(config, entity_id);
+            let persona = build_persona(id.clone(), user, timestamp.clone(), attributes)?;
             user.persona_id = Some(id.clone());
-            push_activity(
-                activity_events,
-                ActivityEventKind::PersonaCreated,
-                Some(user.id.clone()),
-                ActivityObject::Persona(id),
-                timestamp,
-            )?;
+            push_persona_created_activity(activity_events, user, id, timestamp)?;
             Ok(persona)
         })
         .collect()
 }
 
+fn persona_attributes(config: &ForumScenarioConfig, entity_id: &str) -> PersonaAttributes {
+    PersonaAttributes {
+        verbosity: choose(config, "personas", entity_id, "verbosity", &VERBOSITIES),
+        sleep_phase: choose(config, "personas", entity_id, "sleep_phase", &SLEEP_PHASES),
+        activity_pattern: activity_pattern_for(config, entity_id),
+        openness: persona_score(config, entity_id, "openness"),
+        extroversion: persona_score(config, entity_id, "extroversion"),
+        conscientiousness: persona_score(config, entity_id, "conscientiousness"),
+        agreeableness: persona_score(config, entity_id, "agreeableness"),
+        neuroticism: persona_score(config, entity_id, "neuroticism"),
+        posting_frequency: persona_score(config, entity_id, "posting_frequency"),
+        controversy_affinity: persona_score(config, entity_id, "controversy_affinity"),
+        humor_affinity: persona_score(config, entity_id, "humor_affinity"),
+        technical_depth: persona_score(config, entity_id, "technical_depth"),
+        meme_affinity: persona_score(config, entity_id, "meme_affinity"),
+    }
+}
+
+fn build_persona(
+    id: PersonaId,
+    user: &User,
+    timestamp: ModelTimestamp,
+    attributes: PersonaAttributes,
+) -> Result<Persona, ModelValidationError> {
+    let mut persona = Persona::new(
+        id,
+        user.id.clone(),
+        persona_summary(
+            attributes.verbosity,
+            attributes.activity_pattern,
+            attributes.technical_depth,
+            attributes.humor_affinity,
+        ),
+        timestamp,
+    )?;
+
+    apply_persona_attributes(&mut persona, attributes);
+    Ok(persona)
+}
+
+fn apply_persona_attributes(persona: &mut Persona, attributes: PersonaAttributes) {
+    persona.traits = persona_traits(
+        attributes.openness,
+        attributes.extroversion,
+        attributes.conscientiousness,
+        attributes.agreeableness,
+        attributes.technical_depth,
+        attributes.meme_affinity,
+    );
+    persona.openness = attributes.openness;
+    persona.extroversion = attributes.extroversion;
+    persona.conscientiousness = attributes.conscientiousness;
+    persona.agreeableness = attributes.agreeableness;
+    persona.neuroticism = attributes.neuroticism;
+    persona.posting_frequency = attributes.posting_frequency;
+    persona.controversy_affinity = attributes.controversy_affinity;
+    persona.humor_affinity = attributes.humor_affinity;
+    persona.technical_depth = attributes.technical_depth;
+    persona.meme_affinity = attributes.meme_affinity;
+    persona.verbosity = attributes.verbosity;
+    persona.sleep_phase = attributes.sleep_phase;
+    persona.activity_pattern = attributes.activity_pattern;
+}
+
+fn push_persona_created_activity(
+    activity_events: &mut Vec<ActivityEvent>,
+    user: &User,
+    id: PersonaId,
+    timestamp: ModelTimestamp,
+) -> Result<(), ForumGenerationError> {
+    push_activity(
+        activity_events,
+        ActivityEventKind::PersonaCreated,
+        Some(user.id.clone()),
+        ActivityObject::Persona(id),
+        timestamp,
+    )
+}
+
 fn generate_interests() -> Result<Vec<Interest>, ForumGenerationError> {
-    INTEREST_CATALOG
-        .iter()
+    interest_specs()
         .map(|spec| {
             let mut interest = Interest::new(InterestId::new(spec.id)?, spec.label)?;
             interest.category = Some(spec.category.to_string());
@@ -813,20 +891,18 @@ fn assign_user_interests(
     for (user, persona) in users.iter_mut().zip(personas) {
         let count =
             2 + deterministic_index(config, "interests", user.id.as_str(), "interest_count", 4);
-        let mut scored: Vec<(usize, f32)> = INTEREST_CATALOG
-            .iter()
+        let mut scored: Vec<(usize, f32)> = interest_specs()
             .enumerate()
             .map(|(index, spec)| {
-                let tie_breaker = persona_interest_tie_breaker(config, persona, spec);
-                (index, persona_interest_score(persona, spec) + tie_breaker)
+                let tie_breaker = persona_interest_tie_breaker(config, persona, &spec);
+                (index, persona_interest_score(persona, &spec) + tie_breaker)
             })
             .collect();
         scored.sort_by(|left, right| {
-            right.1.total_cmp(&left.1).then_with(|| {
-                INTEREST_CATALOG[left.0]
-                    .id
-                    .cmp(INTEREST_CATALOG[right.0].id)
-            })
+            right
+                .1
+                .total_cmp(&left.1)
+                .then_with(|| INTEREST_IDS[left.0].cmp(INTEREST_IDS[right.0]))
         });
         user.interest_ids = scored
             .into_iter()
@@ -1315,8 +1391,7 @@ fn choose_primary_community(
 }
 
 fn community_interest_indexes(communities: &[Community]) -> HashMap<String, usize> {
-    let interest_slugs = INTEREST_CATALOG
-        .iter()
+    let interest_slugs = interest_specs()
         .map(|interest| slug(interest.label))
         .collect::<Vec<_>>();
     let mut indexes = HashMap::new();
@@ -3921,7 +3996,7 @@ output_format: postgres-sql
 
         assert_eq!(dataset.users.len(), 4);
         assert_eq!(dataset.personas.len(), dataset.users.len());
-        assert_eq!(dataset.interests.len(), INTEREST_CATALOG.len());
+        assert_eq!(dataset.interests.len(), INTEREST_CATALOG_LEN);
         assert_eq!(dataset.communities.len(), 2);
         assert_eq!(dataset.posts.len(), 5);
         assert_eq!(dataset.comments.len(), 7);
@@ -4653,7 +4728,7 @@ output_format: postgres-sql
             .flat_map(|user| user.interest_ids.iter().cloned())
             .collect::<std::collections::BTreeSet<_>>();
 
-        assert_eq!(dataset.interests.len(), INTEREST_CATALOG.len());
+        assert_eq!(dataset.interests.len(), INTEREST_CATALOG_LEN);
         assert!(dataset
             .interests
             .iter()
@@ -4678,20 +4753,24 @@ output_format: postgres-sql
         let memes = catalog_interest("interest-memes");
 
         assert!(
-            persona_interest_score(&technical, programming)
-                > persona_interest_score(&social, programming)
+            persona_interest_score(&technical, &programming)
+                > persona_interest_score(&social, &programming)
         );
         assert!(
-            persona_interest_score(&technical, linux) > persona_interest_score(&culture, linux)
+            persona_interest_score(&technical, &linux) > persona_interest_score(&culture, &linux)
         );
         assert!(
-            persona_interest_score(&social, community)
-                > persona_interest_score(&technical, community)
+            persona_interest_score(&social, &community)
+                > persona_interest_score(&technical, &community)
         );
-        assert!(persona_interest_score(&social, events) > persona_interest_score(&culture, events));
-        assert!(persona_interest_score(&culture, gaming) > persona_interest_score(&social, gaming));
         assert!(
-            persona_interest_score(&culture, memes) > persona_interest_score(&technical, memes)
+            persona_interest_score(&social, &events) > persona_interest_score(&culture, &events)
+        );
+        assert!(
+            persona_interest_score(&culture, &gaming) > persona_interest_score(&social, &gaming)
+        );
+        assert!(
+            persona_interest_score(&culture, &memes) > persona_interest_score(&technical, &memes)
         );
     }
 
@@ -5356,9 +5435,8 @@ output_format: postgres-sql
         }
     }
 
-    fn catalog_interest(id: &str) -> &'static InterestSpec {
-        INTEREST_CATALOG
-            .iter()
+    fn catalog_interest(id: &str) -> InterestSpec {
+        interest_specs()
             .find(|spec| spec.id == id)
             .expect("catalog interest should exist")
     }
